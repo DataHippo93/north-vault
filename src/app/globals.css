@@ -1,18 +1,71 @@
 @import "tailwindcss";
 
+@theme {
+  --color-sage-50: #f4f7f4;
+  --color-sage-100: #e7ece7;
+  --color-sage-200: #d0dad0;
+  --color-sage-300: #adbdb1;
+  --color-sage-400: #889e8d;
+  --color-sage-500: #6b8271;
+  --color-sage-600: #54685a;
+  --color-sage-700: #445348;
+  --color-sage-800: #38433b;
+  --color-sage-900: #303932;
+  --color-sage-950: #1a1f1b;
+
+  --color-slate-950: #020617;
+
+  --color-wood-50: #fdfaf7;
+  --color-wood-100: #f9f1e9;
+  --color-wood-200: #f1e0d0;
+  --color-wood-300: #e4c4aa;
+  --color-wood-400: #d4a07d;
+  --color-wood-500: #c6835d;
+  --color-wood-600: #b86d4e;
+  --color-wood-700: #995741;
+  --color-wood-800: #7c4839;
+  --color-wood-900: #673e32;
+  --color-wood-950: #381f1a;
+
+  --color-vault-50: #f0f4f1;
+  --color-vault-100: #dce5de;
+  --color-vault-200: #b8ccbd;
+  --color-vault-300: #8fae97;
+  --color-vault-400: #6b8f74;
+  --color-vault-500: #4e7358;
+  --color-vault-600: #3d5c46;
+  --color-vault-700: #324a39;
+  --color-vault-800: #293c2f;
+  --color-vault-900: #233228;
+  --color-vault-950: #131c16;
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #0f172a;
-  --navy: #0f172a;
-  --indigo: #6366f1;
+  --background: #fdfaf7; /* wood-50 */
+  --foreground: #1a1f1b; /* sage-950 */
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* Executive scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #adbdb1;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #889e8d;
 }

@@ -32,12 +32,12 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
   return (
     <div
       className={`group relative bg-white rounded-xl border overflow-hidden cursor-pointer transition-all hover:shadow-md ${
-        selected ? 'border-blue-500 ring-2 ring-blue-200' : 'border-slate-200 hover:border-slate-300'
+        selected ? 'border-vault-500 ring-2 ring-vault-200' : 'border-sage-200 hover:border-sage-300'
       }`}
       onClick={onClick}
     >
       {/* Thumbnail area */}
-      <div className="aspect-square bg-slate-100 flex items-center justify-center relative overflow-hidden">
+      <div className="aspect-square bg-sage-50 flex items-center justify-center relative overflow-hidden">
         {asset.content_type === 'image' && thumbUrl ? (
           <img
             src={thumbUrl}
@@ -55,7 +55,7 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
           onClick={e => { e.stopPropagation(); onSelect(asset.id) }}
         >
           <div className={`w-5 h-5 rounded border-2 flex items-center justify-center ${
-            selected ? 'bg-blue-600 border-blue-600' : 'bg-white border-slate-300'
+            selected ? 'bg-vault-600 border-vault-600' : 'bg-white border-sage-300'
           }`}>
             {selected && (
               <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -68,9 +68,9 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
         {/* Business badge */}
         <div className="absolute bottom-2 right-2">
           <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
-            asset.business === 'natures' ? 'bg-green-100 text-green-800' :
-            asset.business === 'adk' ? 'bg-blue-100 text-blue-800' :
-            'bg-slate-100 text-slate-600'
+            asset.business === 'natures' ? 'bg-vault-100 text-vault-800' :
+            asset.business === 'adk' ? 'bg-wood-100 text-wood-800' :
+            'bg-sage-100 text-sage-600'
           }`}>
             {asset.business === 'natures' ? "NS" : asset.business === 'adk' ? 'ADK' : 'Both'}
           </span>
@@ -79,19 +79,19 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
 
       {/* Info */}
       <div className="p-3">
-        <p className="text-sm font-medium text-slate-900 truncate" title={asset.file_name}>
+        <p className="text-sm font-medium text-sage-900 truncate" title={asset.file_name}>
           {asset.file_name}
         </p>
-        <p className="text-xs text-slate-400 mt-0.5">{formatFileSize(asset.file_size)}</p>
+        <p className="text-xs text-sage-400 mt-0.5">{formatFileSize(asset.file_size)}</p>
         {asset.tags && asset.tags.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1">
             {asset.tags.slice(0, 3).map(tag => (
-              <span key={tag} className="px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded text-xs">
+              <span key={tag} className="px-1.5 py-0.5 bg-sage-100 text-sage-600 rounded text-xs">
                 {tag}
               </span>
             ))}
             {asset.tags.length > 3 && (
-              <span className="text-xs text-slate-400">+{asset.tags.length - 3}</span>
+              <span className="text-xs text-sage-400">+{asset.tags.length - 3}</span>
             )}
           </div>
         )}
@@ -101,13 +101,18 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
 }
 
 function TypeIcon({ type }: { type: ContentType }) {
-  const map: Record<ContentType, string> = {
-    image: '🖼',
-    video: '🎥',
-    pdf: '📄',
-    document: '📝',
-    adobe: '🎨',
-    other: '📁',
+  const icons: Record<ContentType, { bg: string; text: string; label: string }> = {
+    image: { bg: 'bg-vault-100', text: 'text-vault-600', label: 'IMG' },
+    video: { bg: 'bg-wood-100', text: 'text-wood-600', label: 'VID' },
+    pdf: { bg: 'bg-red-50', text: 'text-red-500', label: 'PDF' },
+    document: { bg: 'bg-sage-100', text: 'text-sage-600', label: 'DOC' },
+    adobe: { bg: 'bg-wood-100', text: 'text-wood-600', label: 'AI' },
+    other: { bg: 'bg-sage-100', text: 'text-sage-500', label: 'FILE' },
   }
-  return <span className="text-5xl">{map[type] ?? '📁'}</span>
+  const { bg, text, label } = icons[type] ?? icons.other
+  return (
+    <div className={`w-14 h-14 rounded-xl ${bg} flex items-center justify-center`}>
+      <span className={`text-xs font-bold ${text}`}>{label}</span>
+    </div>
+  )
 }

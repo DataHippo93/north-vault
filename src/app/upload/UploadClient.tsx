@@ -110,6 +110,23 @@ export default function UploadClient({ userId }: Props) {
     }
 
     updateFile(index, { status: 'done', progress: 100, assetId: asset.id })
+
+    // 6. Trigger AI Auto-Tagging
+    if (contentType === 'image') {
+      try {
+        fetch('/api/assets/analyze', {
+          method: 'POST',
+          body: JSON.stringify({
+            assetId: asset.id,
+            storageUrl: urlData?.signedUrl,
+            contentType
+          }),
+          headers: { 'Content-Type': 'application/json' }
+        })
+      } catch (err) {
+        console.error('Failed to trigger auto-tagging:', err)
+      }
+    }
   }
 
   async function handleUploadAll() {
@@ -132,18 +149,18 @@ export default function UploadClient({ userId }: Props) {
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
-      <h1 className="text-2xl font-bold text-slate-900">Upload Assets</h1>
+      <h1 className="text-2xl font-bold text-sage-950">Upload Assets</h1>
 
       {/* Settings */}
-      <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
-        <h2 className="text-base font-semibold text-slate-900">Upload settings</h2>
+      <div className="bg-white rounded-xl border border-sage-200 p-6 space-y-4 shadow-sm">
+        <h2 className="text-base font-semibold text-sage-900">Upload settings</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Business</label>
+            <label className="block text-sm font-medium text-sage-700 mb-1">Business</label>
             <select
               value={business}
               onChange={(e) => setBusiness(e.target.value as BusinessEntity)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 bg-white"
+              className="w-full px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500 bg-white"
             >
               <option value="both">Both</option>
               <option value="natures">{"Nature's Storehouse"}</option>
@@ -151,13 +168,13 @@ export default function UploadClient({ userId }: Props) {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Tags (comma-separated)</label>
+            <label className="block text-sm font-medium text-sage-700 mb-1">Tags (comma-separated)</label>
             <input
               type="text"
               value={tags}
               onChange={(e) => setTags(e.target.value)}
               placeholder="e.g. product, 2024, hero"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+              className="w-full px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500"
             />
           </div>
         </div>
@@ -166,33 +183,37 @@ export default function UploadClient({ userId }: Props) {
       {/* Dropzone */}
       <div
         {...getRootProps()}
-        className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-colors ${
-          isDragActive ? 'border-slate-900 bg-slate-50' : 'border-slate-300 hover:border-slate-400'
+        className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all ${
+          isDragActive
+            ? 'border-vault-500 bg-vault-50 shadow-inner'
+            : 'border-sage-300 hover:border-vault-400 hover:bg-vault-50/50'
         }`}
       >
         <input {...getInputProps()} />
-        <svg className="w-12 h-12 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-        </svg>
-        <p className="text-slate-600 font-medium mb-1">
+        <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-sage-100 flex items-center justify-center">
+          <svg className="w-8 h-8 text-sage-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+          </svg>
+        </div>
+        <p className="text-sage-700 font-medium mb-1">
           {isDragActive ? 'Drop files here' : 'Drag and drop files here'}
         </p>
-        <p className="text-sm text-slate-400">or click to browse — any file type supported</p>
+        <p className="text-sm text-sage-400">or click to browse -- any file type supported</p>
       </div>
 
       {/* File list */}
       {files.length > 0 && (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-            <div className="text-sm text-slate-600">
+        <div className="bg-white rounded-xl border border-sage-200 overflow-hidden shadow-sm">
+          <div className="px-6 py-4 border-b border-sage-200 flex items-center justify-between">
+            <div className="text-sm text-sage-600">
               {files.length} file{files.length !== 1 ? 's' : ''}
-              {doneCount > 0 && <span className="text-green-600 ml-2">· {doneCount} done</span>}
+              {doneCount > 0 && <span className="text-vault-600 ml-2">· {doneCount} done</span>}
               {errorCount > 0 && <span className="text-red-600 ml-2">· {errorCount} failed</span>}
             </div>
             <div className="flex gap-3">
               <button
                 onClick={() => setFiles([])}
-                className="text-sm text-slate-500 hover:text-slate-700"
+                className="text-sm text-sage-500 hover:text-sage-700"
               >
                 Clear all
               </button>
@@ -200,7 +221,7 @@ export default function UploadClient({ userId }: Props) {
                 <button
                   onClick={handleUploadAll}
                   disabled={uploading}
-                  className="text-sm bg-slate-900 text-white px-4 py-2 rounded-lg hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                  className="text-sm bg-vault-600 text-white px-4 py-2 rounded-lg hover:bg-vault-700 disabled:opacity-50 transition-colors shadow-sm"
                 >
                   {uploading ? 'Uploading...' : `Upload ${pendingCount} file${pendingCount !== 1 ? 's' : ''}`}
                 </button>
@@ -208,34 +229,34 @@ export default function UploadClient({ userId }: Props) {
             </div>
           </div>
 
-          <ul className="divide-y divide-slate-100">
+          <ul className="divide-y divide-sage-100">
             {files.map((f, i) => (
               <li key={i} className="px-6 py-4 flex items-center gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm font-medium text-slate-900 truncate">{f.file.name}</span>
+                    <span className="text-sm font-medium text-sage-900 truncate">{f.file.name}</span>
                     <StatusBadge status={f.status} />
                   </div>
                   {f.status === 'uploading' && (
-                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div className="h-1.5 bg-sage-100 rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-slate-900 rounded-full transition-all"
+                        className="h-full bg-vault-500 rounded-full transition-all"
                         style={{ width: `${f.progress}%` }}
                       />
                     </div>
                   )}
                   {f.status === 'duplicate' && f.duplicateOf && (
-                    <p className="text-xs text-amber-600">Duplicate of: {f.duplicateOf.file_name}</p>
+                    <p className="text-xs text-wood-600">Duplicate of: {f.duplicateOf.file_name}</p>
                   )}
                   {f.status === 'error' && f.error && (
                     <p className="text-xs text-red-600">{f.error}</p>
                   )}
                   {f.status === 'done' && (
-                    <p className="text-xs text-green-600">Uploaded successfully</p>
+                    <p className="text-xs text-vault-600">Uploaded successfully</p>
                   )}
                 </div>
                 {f.status === 'pending' && (
-                  <button onClick={() => removeFile(i)} className="text-slate-400 hover:text-slate-600 flex-shrink-0">
+                  <button onClick={() => removeFile(i)} className="text-sage-400 hover:text-sage-600 flex-shrink-0">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -252,12 +273,12 @@ export default function UploadClient({ userId }: Props) {
 
 function StatusBadge({ status }: { status: UploadFile['status'] }) {
   const map: Record<UploadFile['status'], { label: string; className: string }> = {
-    pending: { label: 'Pending', className: 'bg-slate-100 text-slate-600' },
-    hashing: { label: 'Hashing...', className: 'bg-blue-100 text-blue-700' },
-    checking: { label: 'Checking...', className: 'bg-blue-100 text-blue-700' },
-    uploading: { label: 'Uploading...', className: 'bg-blue-100 text-blue-700' },
-    done: { label: 'Done', className: 'bg-green-100 text-green-700' },
-    duplicate: { label: 'Duplicate', className: 'bg-amber-100 text-amber-700' },
+    pending: { label: 'Pending', className: 'bg-sage-100 text-sage-600' },
+    hashing: { label: 'Hashing...', className: 'bg-vault-100 text-vault-700' },
+    checking: { label: 'Checking...', className: 'bg-vault-100 text-vault-700' },
+    uploading: { label: 'Uploading...', className: 'bg-vault-100 text-vault-700' },
+    done: { label: 'Done', className: 'bg-vault-100 text-vault-700' },
+    duplicate: { label: 'Duplicate', className: 'bg-wood-100 text-wood-700' },
     error: { label: 'Error', className: 'bg-red-100 text-red-700' },
   }
   const { label, className } = map[status]

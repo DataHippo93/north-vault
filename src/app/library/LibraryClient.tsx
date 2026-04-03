@@ -119,6 +119,21 @@ export default function LibraryClient({ userId, userRole }: Props) {
     loadAssets()
   }
 
+  async function handleRename(asset: Asset, newName: string) {
+    const res = await fetch('/api/assets/rename', {
+      method: 'POST',
+      body: JSON.stringify({ assetId: asset.id, fileName: newName }),
+      headers: { 'Content-Type': 'application/json' }
+    })
+    const data = await res.json()
+    if (data.error) throw new Error(data.error)
+    loadAssets()
+    // Update selected asset to reflect new name
+    if (selectedAsset?.id === asset.id) {
+      setSelectedAsset({ ...asset, file_name: data.newFileName, storage_path: data.newPath })
+    }
+  }
+
   async function handleBulkDownload() {
     const selected = assets.filter(a => selectedIds.has(a.id))
     for (const asset of selected) {
@@ -163,7 +178,7 @@ export default function LibraryClient({ userId, userRole }: Props) {
     <div className="flex flex-col gap-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-900">Asset Library</h1>
+        <h1 className="text-2xl font-bold text-sage-950">Asset Library</h1>
         <div className="flex items-center gap-2">
           <Link
             href="/upload"
@@ -176,7 +191,7 @@ export default function LibraryClient({ userId, userRole }: Props) {
           </Link>
           <button
             onClick={() => setView('grid')}
-            className={`p-2 rounded-md border text-sm ${view === 'grid' ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-300 text-slate-600 hover:bg-slate-100'}`}
+            className={`p-2 rounded-md border text-sm transition-colors ${view === 'grid' ? 'bg-sage-950 text-white border-sage-950' : 'border-sage-300 text-sage-600 hover:bg-sage-100'}`}
             title="Grid view"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -185,7 +200,7 @@ export default function LibraryClient({ userId, userRole }: Props) {
           </button>
           <button
             onClick={() => setView('list')}
-            className={`p-2 rounded-md border text-sm ${view === 'list' ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-300 text-slate-600 hover:bg-slate-100'}`}
+            className={`p-2 rounded-md border text-sm transition-colors ${view === 'list' ? 'bg-sage-950 text-white border-sage-950' : 'border-sage-300 text-sage-600 hover:bg-sage-100'}`}
             title="List view"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -196,7 +211,7 @@ export default function LibraryClient({ userId, userRole }: Props) {
       </div>
 
       {/* Search & Filters */}
-      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+      <div className="bg-white rounded-xl border border-sage-200 p-4 space-y-3 shadow-sm">
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="flex-1">
             <input
@@ -204,13 +219,13 @@ export default function LibraryClient({ userId, userRole }: Props) {
               placeholder="Search by name, notes..."
               value={filters.query}
               onChange={(e) => setFilters(f => ({ ...f, query: e.target.value }))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+              className="w-full px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500"
             />
           </div>
           <select
             value={filters.businessEntity}
             onChange={(e) => setFilters(f => ({ ...f, businessEntity: e.target.value as BusinessEntity | 'all' }))}
-            className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 bg-white"
+            className="px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500 bg-white"
           >
             {businessOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
@@ -221,7 +236,7 @@ export default function LibraryClient({ userId, userRole }: Props) {
               setSortBy(s as typeof sortBy)
               setSortDir(d as typeof sortDir)
             }}
-            className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 bg-white"
+            className="px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500 bg-white"
           >
             <option value="created_at:desc">Newest first</option>
             <option value="created_at:asc">Oldest first</option>
@@ -247,8 +262,8 @@ export default function LibraryClient({ userId, userRole }: Props) {
               }}
               className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
                 filters.contentTypes.includes(type)
-                  ? 'bg-slate-900 text-white border-slate-900'
-                  : 'border-slate-300 text-slate-600 hover:bg-slate-100'
+                  ? 'bg-vault-600 text-white border-vault-600'
+                  : 'border-sage-300 text-sage-600 hover:bg-sage-100'
               }`}
             >
               {type.charAt(0).toUpperCase() + type.slice(1)}
@@ -257,7 +272,7 @@ export default function LibraryClient({ userId, userRole }: Props) {
           {(filters.contentTypes.length > 0 || filters.query || filters.businessEntity !== 'all') && (
             <button
               onClick={() => setFilters(defaultFilters)}
-              className="px-3 py-1 rounded-full text-xs font-medium text-slate-500 hover:text-slate-900 border border-slate-200 hover:border-slate-300"
+              className="px-3 py-1 rounded-full text-xs font-medium text-sage-500 hover:text-sage-900 border border-sage-200 hover:border-sage-300"
             >
               Clear filters
             </button>
@@ -267,11 +282,11 @@ export default function LibraryClient({ userId, userRole }: Props) {
 
       {/* Bulk actions */}
       {selectedIds.size > 0 && (
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 flex flex-wrap items-center gap-3">
-          <span className="text-sm font-medium text-blue-800">{selectedIds.size} selected</span>
+        <div className="bg-vault-50 border border-vault-200 rounded-xl p-3 flex flex-wrap items-center gap-3">
+          <span className="text-sm font-medium text-vault-800">{selectedIds.size} selected</span>
           <button
             onClick={handleBulkDownload}
-            className="text-sm bg-blue-700 text-white px-3 py-1.5 rounded-md hover:bg-blue-800"
+            className="text-sm bg-vault-600 text-white px-3 py-1.5 rounded-md hover:bg-vault-700"
           >
             Download all
           </button>
@@ -282,18 +297,18 @@ export default function LibraryClient({ userId, userRole }: Props) {
               value={tagInput}
               onChange={(e) => setTagInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleBulkTag(tagInput)}
-              className="px-2 py-1.5 border border-blue-300 rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-blue-600"
+              className="px-2 py-1.5 border border-vault-300 rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-vault-500"
             />
             <button
               onClick={() => handleBulkTag(tagInput)}
-              className="text-sm bg-white text-blue-700 border border-blue-300 px-3 py-1.5 rounded-md hover:bg-blue-50"
+              className="text-sm bg-white text-vault-700 border border-vault-300 px-3 py-1.5 rounded-md hover:bg-vault-50"
             >
               Tag
             </button>
           </div>
           <button
             onClick={() => setSelectedIds(new Set())}
-            className="text-sm text-blue-600 hover:text-blue-800 ml-auto"
+            className="text-sm text-vault-600 hover:text-vault-800 ml-auto"
           >
             Clear selection
           </button>
@@ -301,16 +316,18 @@ export default function LibraryClient({ userId, userRole }: Props) {
       )}
 
       {/* Asset count */}
-      <div className="text-sm text-slate-500">
+      <div className="text-sm text-sage-500">
         {loading ? 'Loading...' : `${assets.length} asset${assets.length !== 1 ? 's' : ''}`}
       </div>
 
       {/* Grid/List view */}
       {!loading && assets.length === 0 ? (
-        <div className="text-center py-20 text-slate-500">
-          <svg className="w-12 h-12 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-          </svg>
+        <div className="text-center py-20 text-sage-500">
+          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-sage-100 flex items-center justify-center">
+            <svg className="w-8 h-8 text-sage-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+          </div>
           <p className="text-lg font-medium mb-1">No assets found</p>
           <p className="text-sm">Upload some files to get started.</p>
         </div>
@@ -331,11 +348,11 @@ export default function LibraryClient({ userId, userRole }: Props) {
           ))}
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-xl border border-sage-200 overflow-hidden shadow-sm">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50">
-                <th className="text-left px-4 py-3 font-medium text-slate-600 w-8">
+              <tr className="border-b border-sage-200 bg-sage-50">
+                <th className="text-left px-4 py-3 font-medium text-sage-600 w-8">
                   <input
                     type="checkbox"
                     onChange={(e) => {
@@ -345,18 +362,18 @@ export default function LibraryClient({ userId, userRole }: Props) {
                     checked={selectedIds.size === assets.length && assets.length > 0}
                   />
                 </th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Name</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600 hidden sm:table-cell">Type</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600 hidden md:table-cell">Business</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600 hidden md:table-cell">Size</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600 hidden lg:table-cell">Uploaded</th>
+                <th className="text-left px-4 py-3 font-medium text-sage-600">Name</th>
+                <th className="text-left px-4 py-3 font-medium text-sage-600 hidden sm:table-cell">Type</th>
+                <th className="text-left px-4 py-3 font-medium text-sage-600 hidden md:table-cell">Business</th>
+                <th className="text-left px-4 py-3 font-medium text-sage-600 hidden md:table-cell">Size</th>
+                <th className="text-left px-4 py-3 font-medium text-sage-600 hidden lg:table-cell">Uploaded</th>
               </tr>
             </thead>
             <tbody>
               {assets.map(asset => (
                 <tr
                   key={asset.id}
-                  className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
+                  className="border-b border-sage-100 hover:bg-sage-50 cursor-pointer"
                   onClick={() => setSelectedAsset(asset)}
                 >
                   <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
@@ -373,15 +390,15 @@ export default function LibraryClient({ userId, userRole }: Props) {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <FileTypeIcon type={asset.content_type as ContentType} />
-                      <span className="font-medium text-slate-900 truncate max-w-[200px]">{asset.file_name}</span>
+                      <span className="font-medium text-sage-900 truncate max-w-[200px]">{asset.file_name}</span>
                     </div>
                   </td>
-                  <td className="px-4 py-3 hidden sm:table-cell text-slate-500 capitalize">{asset.content_type}</td>
-                  <td className="px-4 py-3 hidden md:table-cell text-slate-500">
+                  <td className="px-4 py-3 hidden sm:table-cell text-sage-500 capitalize">{asset.content_type}</td>
+                  <td className="px-4 py-3 hidden md:table-cell text-sage-500">
                     {asset.business === 'natures' ? "Nature's" : asset.business === 'adk' ? 'ADK' : 'Both'}
                   </td>
-                  <td className="px-4 py-3 hidden md:table-cell text-slate-500">{formatFileSize(asset.file_size)}</td>
-                  <td className="px-4 py-3 hidden lg:table-cell text-slate-500">
+                  <td className="px-4 py-3 hidden md:table-cell text-sage-500">{formatFileSize(asset.file_size)}</td>
+                  <td className="px-4 py-3 hidden lg:table-cell text-sage-500">
                     {new Date(asset.created_at).toLocaleDateString()}
                   </td>
                 </tr>
@@ -400,6 +417,7 @@ export default function LibraryClient({ userId, userRole }: Props) {
           onUpdateTags={handleUpdateTags}
           onUpdateNotes={handleUpdateNotes}
           onUpdateBusiness={handleUpdateBusiness}
+          onRename={handleRename}
           userRole={userRole}
         />
       )}
@@ -408,17 +426,18 @@ export default function LibraryClient({ userId, userRole }: Props) {
 }
 
 function FileTypeIcon({ type }: { type: ContentType }) {
-  const colors: Record<ContentType, string> = {
-    image: 'text-blue-500',
-    video: 'text-purple-500',
-    pdf: 'text-red-500',
-    document: 'text-green-500',
-    adobe: 'text-orange-500',
-    other: 'text-slate-400',
+  const icons: Record<ContentType, { bg: string; text: string; letter: string }> = {
+    image: { bg: 'bg-vault-100', text: 'text-vault-700', letter: 'IMG' },
+    video: { bg: 'bg-wood-100', text: 'text-wood-700', letter: 'VID' },
+    pdf: { bg: 'bg-red-50', text: 'text-red-600', letter: 'PDF' },
+    document: { bg: 'bg-sage-100', text: 'text-sage-700', letter: 'DOC' },
+    adobe: { bg: 'bg-wood-100', text: 'text-wood-600', letter: 'AI' },
+    other: { bg: 'bg-sage-100', text: 'text-sage-500', letter: 'FILE' },
   }
+  const { bg, text, letter } = icons[type] ?? icons.other
   return (
-    <span className={`text-lg ${colors[type] ?? 'text-slate-400'}`}>
-      {type === 'image' ? '🖼' : type === 'video' ? '🎥' : type === 'pdf' ? '📄' : type === 'document' ? '📝' : type === 'adobe' ? '🎨' : '📁'}
+    <span className={`inline-flex items-center justify-center w-8 h-8 rounded-md text-[10px] font-bold ${bg} ${text}`}>
+      {letter}
     </span>
   )
 }
