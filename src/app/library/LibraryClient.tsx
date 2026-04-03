@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { formatFileSize, getContentType } from '@/lib/utils/fileType'
 import type { Asset, SearchFilters, ContentType, BusinessEntity } from '@/types'
+import Link from 'next/link'
 import AssetCard from '@/components/assets/AssetCard'
 import AssetDetail from '@/components/assets/AssetDetail'
 
@@ -164,6 +165,15 @@ export default function LibraryClient({ userId, userRole }: Props) {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-900">Asset Library</h1>
         <div className="flex items-center gap-2">
+          <Link
+            href="/upload"
+            className="hidden sm:inline-flex items-center gap-2 px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+            Upload Assets
+          </Link>
           <button
             onClick={() => setView('grid')}
             className={`p-2 rounded-md border text-sm ${view === 'grid' ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-300 text-slate-600 hover:bg-slate-100'}`}
