@@ -12,19 +12,26 @@ interface Props {
   onUpdateTags: (asset: Asset, tags: string[]) => void
   onUpdateNotes: (asset: Asset, notes: string) => void
   onUpdateBusiness: (asset: Asset, business: string) => void
+  onRename?: (asset: Asset, newName: string) => Promise<void>
   userRole: string
 }
 
-export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, onUpdateNotes, onUpdateBusiness, userRole }: Props) {
+export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, onUpdateNotes, onUpdateBusiness, onRename, userRole }: Props) {
   const supabase = createClient()
   const [signedUrl, setSignedUrl] = useState<string | null>(null)
   const [tagInput, setTagInput] = useState('')
   const [notes, setNotes] = useState(asset.notes ?? '')
   const [notesChanged, setNotesChanged] = useState(false)
+  const [isRenaming, setIsRenaming] = useState(false)
+  const [newName, setNewName] = useState(asset.file_name)
+  const [aiTagging, setAiTagging] = useState(false)
+  const [aiTagError, setAiTagError] = useState<string | null>(null)
 
   useEffect(() => {
     setNotes(asset.notes ?? '')
     setNotesChanged(false)
+    setNewName(asset.file_name)
+    setIsRenaming(false)
 
     const path = asset.storage_path || asset.file_path
     if (path) {
@@ -57,27 +64,101 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
     onUpdateTags(asset, (asset.tags ?? []).filter(t => t !== tag))
   }
 
+  async function handleGetAiTags() {
+    if (asset.content_type !== 'image') {
+      setAiTagError('AI tagging is only supported for images.')
+      return
+    }
+    setAiTagging(true)
+    setAiTagError(null)
+    try {
+      const res = await fetch('/api/assets/ai-tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetId: asset.id }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setAiTagError(data.error ?? 'AI tagging failed')
+      } else {
+        const existing = asset.tags ?? []
+        const merged = Array.from(new Set([...existing, ...data.tags]))
+        onUpdateTags(asset, merged)
+      }
+    } catch {
+      setAiTagError('Network error — please try again.')
+    } finally {
+      setAiTagging(false)
+    }
+  }
+
+  async function handleRename() {
+    if (!onRename || !newName.trim() || newName === asset.file_name) {
+      setIsRenaming(false)
+      return
+    }
+    try {
+      await onRename(asset, newName.trim())
+      setIsRenaming(false)
+    } catch (err) {
+      console.error(err)
+      alert('Failed to rename asset')
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="absolute inset-0 bg-sage-950/60 backdrop-blur-sm" onClick={onClose} />
 
       {/* Panel */}
       <div className="relative ml-auto w-full max-w-md h-full bg-white shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
-          <h2 className="text-base font-semibold text-slate-900 truncate pr-4">{asset.file_name}</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 flex-shrink-0">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+        <div className="px-6 py-4 border-b border-sage-200 bg-wood-50 space-y-1">
+          <div className="flex items-center justify-between">
+            {isRenaming ? (
+              <div className="flex-1 pr-4 flex gap-2">
+                <input
+                  type="text"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  className="flex-1 px-2 py-1 text-sm border border-vault-300 rounded focus:outline-none focus:ring-1 focus:ring-vault-500"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleRename()
+                    if (e.key === 'Escape') { setIsRenaming(false); setNewName(asset.file_name) }
+                  }}
+                />
+                <button onClick={handleRename} className="text-vault-600 hover:text-vault-800">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                </button>
+              </div>
+            ) : (
+              <h2 className="text-base font-semibold text-sage-950 truncate pr-4">{asset.file_name}</h2>
+            )}
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {onRename && !isRenaming && (
+                <button onClick={() => setIsRenaming(true)} className="text-sage-400 hover:text-vault-600 p-1">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  </svg>
+                </button>
+              )}
+              <button onClick={onClose} className="text-sage-400 hover:text-sage-600">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* Preview */}
-          <div className="bg-slate-100 rounded-xl overflow-hidden flex items-center justify-center" style={{minHeight: 200}}>
+          <div className="bg-sage-50 rounded-xl overflow-hidden flex items-center justify-center" style={{minHeight: 200}}>
             {asset.content_type === 'image' && signedUrl ? (
               <img src={signedUrl} alt={asset.file_name} className="max-w-full max-h-64 object-contain" />
             ) : asset.content_type === 'video' && signedUrl ? (
@@ -86,17 +167,19 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
               <iframe src={signedUrl} className="w-full h-64" title={asset.file_name} />
             ) : (
               <div className="text-center py-12">
-                <span className="text-6xl">
-                  {asset.content_type === 'document' ? '📝' : asset.content_type === 'adobe' ? '🎨' : '📁'}
-                </span>
-                <p className="text-sm text-slate-500 mt-2">{asset.mime_type}</p>
+                <div className="w-16 h-16 mx-auto rounded-2xl bg-sage-100 flex items-center justify-center mb-3">
+                  <span className="text-sm font-bold text-sage-500">
+                    {asset.content_type === 'document' ? 'DOC' : asset.content_type === 'adobe' ? 'AI' : 'FILE'}
+                  </span>
+                </div>
+                <p className="text-sm text-sage-500">{asset.mime_type}</p>
               </div>
             )}
           </div>
 
           {/* Metadata */}
           <div className="space-y-2">
-            <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Details</h3>
+            <h3 className="text-xs font-semibold text-sage-500 uppercase tracking-wider">Details</h3>
             <dl className="space-y-2">
               <Row label="Original name" value={asset.original_filename} />
               <Row label="Size" value={formatFileSize(asset.file_size)} />
@@ -111,11 +194,11 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
 
           {/* Business */}
           <div className="space-y-2">
-            <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Business</h3>
+            <h3 className="text-xs font-semibold text-sage-500 uppercase tracking-wider">Business</h3>
             <select
               value={asset.business}
               onChange={(e) => onUpdateBusiness(asset, e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 bg-white"
+              className="w-full px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500 bg-white"
             >
               <option value="both">Both</option>
               <option value="natures">{"Nature's Storehouse"}</option>
@@ -125,12 +208,33 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
 
           {/* Tags */}
           <div className="space-y-2">
-            <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Tags</h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-sage-500 uppercase tracking-wider">Tags</h3>
+              {asset.content_type === 'image' && (
+                <button
+                  onClick={handleGetAiTags}
+                  disabled={aiTagging}
+                  className="flex items-center gap-1 text-xs text-vault-600 hover:text-vault-800 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {aiTagging ? (
+                    <span>Analyzing...</span>
+                  ) : (
+                    <>
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                      AI Tags
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+            {aiTagError && <p className="text-xs text-red-500">{aiTagError}</p>}
             <div className="flex flex-wrap gap-2 mb-2">
               {(asset.tags ?? []).map(tag => (
-                <span key={tag} className="flex items-center gap-1 px-2 py-1 bg-slate-100 text-slate-700 rounded-md text-sm">
+                <span key={tag} className="flex items-center gap-1 px-2 py-1 bg-sage-100 text-sage-700 rounded-md text-sm">
                   {tag}
-                  <button onClick={() => removeTag(tag)} className="text-slate-400 hover:text-slate-700">
+                  <button onClick={() => removeTag(tag)} className="text-sage-400 hover:text-sage-700">
                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -145,9 +249,9 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
                 onChange={(e) => setTagInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && addTag()}
                 placeholder="Add tag..."
-                className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                className="flex-1 px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500"
               />
-              <button onClick={addTag} className="px-3 py-2 bg-slate-900 text-white rounded-lg text-sm hover:bg-slate-800">
+              <button onClick={addTag} className="px-3 py-2 bg-vault-600 text-white rounded-lg text-sm hover:bg-vault-700 transition-colors">
                 Add
               </button>
             </div>
@@ -155,18 +259,18 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
 
           {/* Notes */}
           <div className="space-y-2">
-            <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Notes</h3>
+            <h3 className="text-xs font-semibold text-sage-500 uppercase tracking-wider">Notes</h3>
             <textarea
               value={notes}
               onChange={(e) => { setNotes(e.target.value); setNotesChanged(true) }}
               placeholder="Add notes about this asset..."
               rows={3}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 resize-none"
+              className="w-full px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500 resize-none"
             />
             {notesChanged && (
               <button
                 onClick={() => { onUpdateNotes(asset, notes); setNotesChanged(false) }}
-                className="text-sm text-blue-600 hover:text-blue-800"
+                className="text-sm text-vault-600 hover:text-vault-800 font-medium"
               >
                 Save notes
               </button>
@@ -175,10 +279,10 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
         </div>
 
         {/* Footer actions */}
-        <div className="px-6 py-4 border-t border-slate-200 flex gap-3">
+        <div className="px-6 py-4 border-t border-sage-200 bg-wood-50 flex gap-3">
           <button
             onClick={handleDownload}
-            className="flex-1 bg-slate-900 text-white py-2 rounded-lg text-sm font-medium hover:bg-slate-800 transition-colors"
+            className="flex-1 bg-vault-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-vault-700 transition-colors shadow-sm"
           >
             Download
           </button>
@@ -199,8 +303,8 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-2">
-      <dt className="text-xs text-slate-500 w-28 flex-shrink-0 pt-0.5">{label}</dt>
-      <dd className="text-sm text-slate-900 break-all">{value}</dd>
+      <dt className="text-xs text-sage-500 w-28 flex-shrink-0 pt-0.5">{label}</dt>
+      <dd className="text-sm text-sage-900 break-all">{value}</dd>
     </div>
   )
 }
