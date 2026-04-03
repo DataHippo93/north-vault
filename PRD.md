@@ -1,129 +1,278 @@
-# Northvault — Product Requirements Document
+# NorthVault — Product Requirements Document
 
-## What is Northvault
-
-Northvault is a private Digital Asset Management (DAM) system for two related businesses:
-
-- **Nature's Storehouse** — natural grocery and wellness retail
-- **Adirondack Fragrance Farm (ADK)** — specialty fragrance and apothecary brand
-
-Internal use only. Not publicly accessible.
+**Version:** 1.0
+**Date:** 2026-04-03
+**Owner:** Clark Maine / Yen Maine
+**Status:** Phase 1 In Progress
 
 ---
 
-## Phase 1 — MVP (current)
+## 1. What is NorthVault
 
-### Auth
+NorthVault is a private, invite-only Digital Asset Management (DAM) system for two related businesses:
 
-- **Supabase Auth** with PKCE flow
-- **Email invite flow**: Admin invites users by email → user receives link → redirects to `/auth/callback` → redirects to `/auth/set-password`
-- **Password reset flow**: User requests reset → receives link → redirects to `/auth/callback` → redirects to `/auth/set-password`
-- Both flows use `token_hash` OTP verification at `/auth/callback`
-- Authenticated sessions persisted via SSR cookies (`@supabase/ssr`)
+- **Nature's Storehouse** — natural grocery and wellness retail store
+- **Adirondack Fragrance Farm (ADK)** — specialty fragrance and apothecary brand
 
-### Asset Upload & Storage
+Internal use only. ~5 staff users. Not publicly accessible. No self-signup.
 
-- Drag-and-drop or file picker upload
-- Supported file types: JPG, PNG, GIF, WebP, MP4, MOV, PDF, DOCX, XLSX, PPTX, AI, PSD, SVG, ZIP, and more
-- Files stored in Supabase Storage bucket `northvault-assets`
+---
+
+## 2. Goals
+
+- One centralized place for all photos, videos, documents, and creative files
+- Fast search and filtering by business entity, type, tag, and date
+- Secure, role-based access (Admin vs Viewer)
+- No duplicate files (SHA-256 deduplication)
+- Works from any browser, no desktop app required
+- Free/low-cost infra (Supabase free tier / $10/mo Pro upgrade when needed)
+
+---
+
+## 3. Users
+
+| User | Role | Business |
+|------|------|----------|
+| Clark Maine | Admin | Both |
+| Yen Maine | Admin | Both |
+| ~3 staff | Viewer | One or both |
+
+---
+
+## 4. Phase 1 — MVP
+
+### 4.1 Authentication
+
+- **Supabase Auth** with PKCE flow via `@supabase/ssr`
+- **Invite-only**: No public signup. Admin invites users via email.
+- **Invite flow**: Admin sends invite → user receives email → clicks link → `/auth/callback` verifies `token_hash` with `verifyOtp({type:'invite'})` → redirects to `/auth/set-password`
+- **Password reset flow**: User clicks "Forgot password" → enters email → receives reset email → clicks link → `/auth/callback` verifies with `verifyOtp({type:'recovery'})` → redirects to `/auth/set-password`
+- **Set-password page**: Reads existing session from cookie, calls `updateUser({password})` — does NOT re-verify token
+- Sessions persisted via SSR cookies (Next.js middleware refreshes tokens)
+- `NEXT_PUBLIC_SITE_URL` must be set to production URL for correct email link generation
+
+### 4.2 Asset Upload & Storage
+
+- Drag-and-drop zone (react-dropzone) + click-to-browse
+- Bulk upload: multiple files at once
+- Supported types: JPG, PNG, GIF, WebP, HEIC, SVG, MP4, MOV, AVI, MKV, WebM, PDF, DOCX, XLSX, PPTX, TXT, CSV, PSD, AI, EPS, INDD, ZIP, and any other file
 - Max file size: 500MB per file
-- **Deduplication**: SHA-256 hash computed client-side before upload; if hash already exists in DB, upload is skipped and user sees "Already exists" with a link to the existing asset
-- Upload progress tracked per file
+- Files stored in Supabase Storage bucket `northvault-assets` (private, signed URLs)
+- **Deduplication**: SHA-256 hash computed client-side (Web Crypto API) before upload. If hash already exists in DB → upload skipped, user sees "Duplicate of: [filename]" with link to existing asset
+- Upload progress shown per file with status badges (Pending / Hashing / Checking / Uploading / Done / Duplicate / Error)
 
-### Asset Metadata & Tagging
-
-Each asset record contains:
+### 4.3 Asset Metadata
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | UUID | Primary key |
 | `file_name` | TEXT | Display name |
 | `original_filename` | TEXT | Original upload name |
-| `file_path` | TEXT | Legacy path field |
 | `storage_path` | TEXT | Supabase Storage path |
-| `storage_url` | TEXT | Signed URL (cached) |
-| `file_size` | BIGINT | Size in bytes |
+| `storage_url` | TEXT | Signed URL (1-year cache) |
+| `file_size` | BIGINT | Bytes |
 | `mime_type` | TEXT | MIME type |
-| `content_type` | TEXT | Classified type (image/video/pdf/document/adobe/other) |
-| `sha256_hash` | TEXT | Unique — dedup key |
+| `content_type` | TEXT | `image` / `video` / `pdf` / `document` / `adobe` / `other` |
+| `sha256_hash` | TEXT UNIQUE | Deduplication key |
 | `business` | TEXT | `natures` / `adk` / `both` |
-| `uploaded_by` | UUID | Auth user reference |
-| `created_at` | TIMESTAMPTZ | Upload timestamp |
-| `original_created_at` | TIMESTAMPTZ | File modification time |
-| `tags` | TEXT[] | Free-text user tags |
+| `tags` | TEXT[] | User-defined tags |
 | `notes` | TEXT | Free-text notes |
-| `thumbnail_path` | TEXT | Future: generated thumbnails |
+| `thumbnail_path` | TEXT | Future: generated preview |
+| `uploaded_by` | UUID | Auth user FK |
+| `created_at` | TIMESTAMPTZ | Upload timestamp |
+| `original_created_at` | TIMESTAMPTZ | File modification time from OS |
 
-### Search & Browse
+### 4.4 Asset Browser & Search
 
-- Full-text search across filename and notes
-- Filter by: content type (image/video/pdf/document/adobe/other), business entity, date range, tags
-- Grid view with thumbnails and list view with table
-- Sort by: date (newest/oldest), name (A-Z/Z-A), size (largest/smallest)
-- Bulk select: download all selected, apply tag to all selected
+- Grid view (thumbnails, responsive 2–5 cols) + List view (table)
+- **Search**: full-text on filename and notes
+- **Filters**:
+  - Content type pills (Image / Video / PDF / Document / Adobe / Other) — multi-select
+  - Business entity dropdown (All / Nature's Storehouse / ADK Fragrance / Both)
+  - Date range (from / to)
+  - Tags (filter by one or more)
+- **Sort**: newest, oldest, name A-Z, name Z-A, largest, smallest
+- **Bulk select**: checkbox per card, select-all in list view
+  - Download all selected (sequential signed URL downloads)
+  - Apply tag to all selected
 
-### Asset Preview
+### 4.5 Asset Preview & Detail Panel
 
-- **Image**: inline `<img>` thumbnail via signed URL
-- **Video**: inline `<video>` player
-- **PDF**: `<iframe>` embedded viewer
-- **Other**: file type icon + download button
-- Slide-in detail panel with metadata editor, tag manager, notes, business assignment
+- Slide-in panel from right (fixed overlay)
+- **Image**: full-res `<img>` via signed URL
+- **Video**: `<video>` player with controls
+- **PDF**: `<iframe>` embedded
+- **Other** (document, adobe, zip): icon + MIME type + download button
+- Panel allows editing: tags (add/remove), notes, business assignment
+- Download button triggers signed URL download with original filename
+- Admin-only: Delete button (with confirmation dialog)
 
-### Users & Roles
+### 4.6 Tagging
 
-| Role | Permissions |
-|------|-------------|
-| `admin` | Invite users, delete any asset, change any metadata, change user roles |
-| `viewer` | Upload assets, tag own assets, view all assets |
+- Tags stored as `text[]` array on asset record
+- Add tags during upload (comma-separated input)
+- Add/remove tags in detail panel (Enter to add)
+- Bulk tag: apply a tag to all selected assets in library
+- Future (Phase 2): tag autocomplete from existing tags, tag suggestions
 
-Profiles auto-created on signup via database trigger (`northvault.handle_new_user()`).
+### 4.7 User Management (Admin)
+
+- `/admin` page — admin-only (redirects viewer to `/library`)
+- Invite form: email + role (Viewer / Admin) → calls `/api/admin/invite`
+- User list table with role dropdown per user
+- Admin cannot change their own role via the table
+
+### 4.8 Roles & Permissions
+
+| Action | Admin | Viewer |
+|--------|-------|--------|
+| Browse & search assets | Yes | Yes |
+| Upload assets | Yes | Yes |
+| Download assets | Yes | Yes |
+| Edit tags / notes / business | Yes | Yes |
+| Delete any asset | Yes | No |
+| Invite users | Yes | No |
+| Change user roles | Yes | No |
+| View admin page | Yes | No |
 
 ---
 
-## Tech Stack
+## 5. Tech Stack
 
 | Layer | Technology |
 |-------|------------|
-| Framework | Next.js 15+ (App Router) |
-| Auth | Supabase Auth (PKCE, email invites) |
-| Database | Supabase Postgres (schema: `northvault`) |
-| Storage | Supabase Storage (`northvault-assets` bucket) |
-| Language | TypeScript |
-| Styling | Tailwind CSS |
-| Deployment | Vercel |
+| Framework | Next.js 16+ (App Router, TypeScript) |
+| Auth | Supabase Auth (PKCE, email invites, SSR cookies) |
+| Database | Supabase Postgres — schema `northvault` |
+| Storage | Supabase Storage — bucket `northvault-assets` |
+| Styling | Tailwind CSS v4 |
+| Drag-drop | react-dropzone |
+| Icons | Inline SVG / emoji (no icon library dependency) |
+| Deployment | Vercel (serverless, edge) |
 
 ---
 
-## Database Schema
+## 6. Database Schema
 
 ```
 northvault (schema)
-├── profiles          — user profiles with roles
-├── assets            — all uploaded files
-├── collections       — asset groupings (future)
-└── collection_assets — many-to-many join (future)
+├── profiles          — user profiles with roles (id, email, name, role, business, created_at)
+├── assets            — all uploaded files (see §4.3)
+├── collections       — reserved for Phase 2 groupings
+└── collection_assets — reserved for Phase 2 many-to-many join
 ```
 
-RLS enabled on all tables. Authenticated users can read all assets; write restricted to uploader or admin.
+Row Level Security (RLS) enabled on all tables.
+
+**Policies:**
+- `assets`: authenticated users can SELECT/INSERT/UPDATE/DELETE
+- `profiles`: authenticated users can SELECT/INSERT/UPDATE
+
+**Trigger:** `northvault.handle_new_user()` — fires AFTER INSERT on `auth.users`, creates profile row with role from `raw_user_meta_data.role` (defaults to `viewer`).
 
 ---
 
-## Phase 2 — Future (design considerations)
+## 7. Auth Email Templates (Supabase Dashboard)
 
-- **Canva integration** via Canva Apps SDK — browse and insert Northvault assets directly in Canva designs
-- **Social media auto-save** — Instagram/Facebook Graph API webhook saves posts automatically as assets
-- **SharePoint import** — bulk import from Microsoft SharePoint document libraries
-- **Collections** — curated asset groups with sharing links
-- **Thumbnail generation** — server-side thumbnail generation for video and documents
-- **Version history** — track asset revisions
+Configure custom email templates in Supabase Dashboard → Authentication → Email Templates:
+
+- **Invite**: Subject "You've been invited to NorthVault", dark header, white card body, single CTA "Set Your Password"
+- **Reset**: Subject "Reset your NorthVault password", same style, CTA "Reset Password"
+
+Templates should use `{{ .ConfirmationURL }}` which Supabase populates with the correct `token_hash` link.
 
 ---
 
-## Key Design Decisions
+## 8. Environment Variables
 
-1. **Schema isolation**: All Northvault tables live in a dedicated `northvault` Postgres schema to avoid collisions with other Supabase projects sharing the same instance.
-2. **Client-side hashing**: SHA-256 computed in the browser using Web Crypto API before upload, keeping dedup logic fast and free.
-3. **Signed URLs**: Storage objects use signed URLs (not public), ensuring only authenticated users can access files.
-4. **PKCE everywhere**: Both invite and reset flows use the `token_hash` OTP path (not deprecated implicit flow) for security.
-5. **Service role for invites**: Admin invite endpoint uses service role key server-side to call `auth.admin.inviteUserByEmail()`.
+| Variable | Description |
+|----------|-------------|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon/public key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (server-only) |
+| `NEXT_PUBLIC_SITE_URL` | Production URL (for auth email links) |
+
+---
+
+## 9. File Structure
+
+```
+src/
+├── app/
+│   ├── admin/           — Admin panel (invite users, manage roles)
+│   ├── api/admin/       — API routes: invite, patch user role
+│   ├── auth/
+│   │   ├── callback/    — OTP verification route
+│   │   ├── error/       — Auth error display
+│   │   ├── login/       — Login + forgot password
+│   │   └── set-password/ — Password creation after invite/reset
+│   ├── library/         — Asset browser (main page)
+│   ├── upload/          — File upload page
+│   └── layout.tsx       — Root layout
+├── components/
+│   ├── assets/
+│   │   ├── AssetCard.tsx    — Grid card with thumbnail
+│   │   └── AssetDetail.tsx  — Slide-in detail/edit panel
+│   └── layout/
+│       └── AppShell.tsx     — Nav header + page wrapper
+├── lib/
+│   ├── supabase/
+│   │   ├── client.ts    — Browser Supabase client
+│   │   └── server.ts    — Server + service role clients
+│   └── utils/
+│       ├── fileHash.ts  — SHA-256 + duplicate check
+│       └── fileType.ts  — MIME → content type classifier
+├── proxy.ts             — Next.js middleware (auth guard + cookie refresh)
+└── types/
+    └── index.ts         — Shared TypeScript types
+```
+
+---
+
+## 10. Phase 2 — Future (Design Notes Only, Not Built)
+
+### 10.1 Social Media Auto-Save
+- Instagram Basic Display API or Facebook Graph API webhook
+- When a post is published, webhook fires → server downloads media → uploads to NorthVault as new asset with tags `["instagram"]` or `["facebook"]`, business set from account mapping
+- Requires OAuth token storage per social account
+
+### 10.2 Canva Apps SDK Integration
+- Publish a Canva App that connects to NorthVault
+- Users browse NorthVault library from inside Canva and insert assets directly into designs
+- Requires Canva developer account + signed Canva App submission
+- Auth: Canva SDK passes user context; NorthVault validates against its own user list
+
+### 10.3 Version History
+- Track asset revisions (upload new version of same logical asset)
+- Keep previous versions accessible and downloadable
+
+### 10.4 Collections
+- Named groups of assets (e.g., "Spring 2025 Campaign", "Product Catalog")
+- Share collections as a view-only link (no auth required for link viewers)
+
+### 10.5 AI Tagging
+- Auto-suggest tags based on image content (e.g., AWS Rekognition or Supabase AI)
+- Apply suggested tags with one click during upload
+
+---
+
+## 11. Non-Goals (Phase 1)
+
+- No public-facing gallery
+- No self-signup
+- No sharing links
+- No video transcoding or thumbnail generation
+- No real-time collaboration
+- No mobile app
+
+---
+
+## 12. Success Criteria (Phase 1)
+
+- Clark and Yen can log in and upload assets
+- Uploading the same file twice is blocked with "Duplicate" message
+- Assets are searchable by name, type, business, and tag
+- Images show thumbnails inline
+- Admins can invite new users
+- Build passes `npm run build` with zero TypeScript errors
+- Deployed and accessible at production Vercel URL

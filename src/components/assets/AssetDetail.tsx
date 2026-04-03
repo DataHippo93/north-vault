@@ -26,12 +26,15 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
     setNotes(asset.notes ?? '')
     setNotesChanged(false)
 
-    supabase.storage
-      .from('northvault-assets')
-      .createSignedUrl(asset.file_path, 3600)
-      .then(({ data }) => {
-        if (data?.signedUrl) setSignedUrl(data.signedUrl)
-      })
+    const path = asset.storage_path || asset.file_path
+    if (path) {
+      supabase.storage
+        .from('northvault-assets')
+        .createSignedUrl(path, 3600)
+        .then(({ data }) => {
+          if (data?.signedUrl) setSignedUrl(data.signedUrl)
+        })
+    }
   }, [asset.id])
 
   async function handleDownload() {

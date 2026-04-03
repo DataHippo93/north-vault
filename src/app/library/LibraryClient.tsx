@@ -79,7 +79,10 @@ export default function LibraryClient({ userId, userRole }: Props) {
     if (!confirm(`Delete "${asset.file_name}"? This cannot be undone.`)) return
 
     // Delete from storage
-    await supabase.storage.from('northvault-assets').remove([asset.file_path])
+    const storagePath = asset.storage_path || asset.file_path
+    if (storagePath) {
+      await supabase.storage.from('northvault-assets').remove([storagePath])
+    }
 
     // Delete from DB
     await supabase.schema('northvault').from('assets').delete().eq('id', asset.id)
@@ -118,7 +121,9 @@ export default function LibraryClient({ userId, userRole }: Props) {
   async function handleBulkDownload() {
     const selected = assets.filter(a => selectedIds.has(a.id))
     for (const asset of selected) {
-      const { data } = await supabase.storage.from('northvault-assets').createSignedUrl(asset.file_path, 60)
+      const path = asset.storage_path || asset.file_path
+      if (!path) continue
+      const { data } = await supabase.storage.from('northvault-assets').createSignedUrl(path, 60)
       if (data?.signedUrl) {
         const a = document.createElement('a')
         a.href = data.signedUrl

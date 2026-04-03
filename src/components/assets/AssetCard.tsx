@@ -18,14 +18,16 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
 
   useEffect(() => {
     if (asset.content_type === 'image') {
+      const path = asset.storage_path || asset.file_path
+      if (!path) return
       supabase.storage
         .from('northvault-assets')
-        .createSignedUrl(asset.file_path, 3600)
+        .createSignedUrl(path, 3600)
         .then(({ data }) => {
           if (data?.signedUrl) setThumbUrl(data.signedUrl)
         })
     }
-  }, [asset.id, asset.file_path, asset.content_type])
+  }, [asset.id, asset.storage_path, asset.file_path, asset.content_type])
 
   return (
     <div
