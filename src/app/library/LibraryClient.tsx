@@ -40,6 +40,7 @@ export default function LibraryClient({ userId, userRole }: Props) {
   const [spBrowseError, setSpBrowseError] = useState<string | null>(null)
   const [spSelectedFiles, setSpSelectedFiles] = useState<Set<number>>(new Set())
   const [spMode, setSpMode] = useState<'browse' | 'json'>('browse')
+  const [spFolderPath, setSpFolderPath] = useState<string>('')
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
@@ -234,6 +235,7 @@ export default function LibraryClient({ userId, userRole }: Props) {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Browse failed')
       setSpBrowseFiles(data.files || [])
+      setSpFolderPath(data.folderPath || '')
     } catch (err) {
       setSpBrowseError(err instanceof Error ? err.message : 'Browse failed')
     } finally {

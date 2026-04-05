@@ -193,5 +193,16 @@ export async function POST(request: NextRequest) {
     isFolder: !!item.folder,
   }))
 
-  return NextResponse.json({ files: results, count: results.length })
+  // Resolve the current folder path for the response so the UI can track where it is.
+  // Priority: explicit folderPath param > parsed from URL > empty string (root).
+  const currentFolderPath: string = (() => {
+    if (folderPath) return folderPath
+    if (folderUrl) {
+      const parsed = parseSharePointUrl(folderUrl)
+      if (parsed?.itemPath) return parsed.itemPath
+    }
+    return ''
+  })()
+
+  return NextResponse.json({ files: results, count: results.length, folderPath: currentFolderPath })
 }

@@ -1,44 +1,10 @@
 import { createClient } from '@/lib/supabase/server'
-import { NextResponse, type NextRequest } from 'next/server'
+import { NextResponse } from 'next/server'
 import { computeSHA256FromBuffer } from '@/lib/utils/fileHash'
 import { getContentType } from '@/lib/utils/fileType'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const runtime = 'nodejs'
-
-interface SharePointItem {
-  name: string
-  url: string
-  size?: number
-  mimeType?: string
-  business?: 'natures' | 'adk' | 'both'
-  tags?: string[]
-  folderPath?: string
-}
-
-/**
- * Convert a folder path like "Products/Candles/Spring 2024" into
- * lowercased, slug-style tags: ["products", "candles", "spring-2024"]
- */
-function folderPathToTags(folderPath: string): string[] {
-  return folderPath
-    .split('/')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .map(s => s.toLowerCase().replace(/\s+/g, '-'))
-}
-
-/**
- * Convert a folder path into a human-readable source note.
- * "Products/Candles/Spring 2024" → "Source: SharePoint > Products > Candles > Spring 2024"
- */
-function folderPathToNote(folderPath: string): string {
-  const segments = folderPath
-    .split('/')
-    .map(s => s.trim())
-    .filter(Boolean)
-  return `Source: SharePoint > ${segments.join(' > ')}`
-}
 
 async function tagImageIfNeeded(params: {
   supabase: Awaited<ReturnType<typeof createClient>>
@@ -82,7 +48,7 @@ async function tagImageIfNeeded(params: {
           },
           {
             type: 'text',
-            text: "Analyze this image and return 5-8 relevant tags in lowercase, comma-separated. Tags should describe: content/subject matter, colors, mood, business context. Return ONLY the comma-separated tags, nothing else.",
+            text: 'Return 5-8 lowercase, comma-separated tags for this image. Return only tags.',
           },
         ],
       },
@@ -90,11 +56,7 @@ async function tagImageIfNeeded(params: {
   })
 
   const responseText = message.content[0].type === 'text' ? message.content[0].text : ''
-  const tags = responseText
-    .split(',')
-    .map((t) => t.trim().toLowerCase().replace(/[^a-z0-9\s-]/g, ''))
-    .filter(Boolean)
-
+  const tags = responseText.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean)
   if (!tags.length) return [] as string[]
 
   const { data: asset } = await params.supabase
@@ -116,43 +78,30 @@ async function tagImageIfNeeded(params: {
   return combinedTags
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(request: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await request.json()
-  const folderUrl = body.folderUrl || body.sharePointFolderUrl
-  const items: SharePointItem[] = body.items || []
-  const business = body.business || 'both'
-  const tags = Array.isArray(body.tags) ? body.tags.map((t: string) => String(t).toLowerCase()).filter(Boolean) : []
-  const folderPath: string | undefined = body.folderPath
-  const folderTags = folderPath ? folderPathToTags(folderPath) : []
-  const folderNote = folderPath ? folderPathToNote(folderPath) : ''
-  const autoTag = body.autoTag !== false
+  const jobId = body.jobId
+  const items = Array.isArray(body.items) ? body.items : []
+  const chunkSize = Math.max(1, Math.min(Number(body.chunkSize) || 25, 100))
 
-  if ((!folderUrl && !items.length) || (folderUrl && typeof folderUrl !== 'string')) {
-    return NextResponse.json({ error: 'Provide folderUrl or items' }, { status: 400 })
+  if (!jobId || !items.length) {
+    return NextResponse.json({ error: 'jobId and items are required' }, { status: 400 })
   }
 
-  // Demo mode: if a folder URL is provided but no item list, we report what a client-side resolver should do.
-  if (folderUrl && !items.length) {
-    return NextResponse.json({
-      error: 'SharePoint folder enumeration requires items or a resolver integration.',
-      hint: 'Pass a pre-enumerated items array from SharePoint or connect a Graph enumerator.',
-      folderUrl,
-    }, { status: 501 })
-  }
-
+  const chunk = items.slice(0, chunkSize)
   const results: Array<Record<string, unknown>> = []
+  let processed = 0
+  let failed = 0
 
-  for (const item of items) {
+  for (const item of chunk) {
     try {
       const res = await fetch(item.url)
       if (!res.ok) {
+        failed++
         results.push({ name: item.name, status: 'error', error: `download failed: ${res.status}` })
         continue
       }
@@ -168,6 +117,7 @@ export async function POST(request: NextRequest) {
         .maybeSingle()
 
       if (duplicate) {
+        processed++
         results.push({ name: item.name, status: 'duplicate', duplicateOf: duplicate })
         continue
       }
@@ -177,21 +127,18 @@ export async function POST(request: NextRequest) {
       const ext = item.name.split('.').pop() || ''
       const storagePath = `${user.id}/${Date.now()}-${hash.slice(0, 8)}.${ext}`
 
-      const upload = await supabase.storage
-        .from('northvault-assets')
-        .upload(storagePath, buffer, {
-          contentType: mimeType,
-          upsert: false,
-        })
+      const upload = await supabase.storage.from('northvault-assets').upload(storagePath, buffer, {
+        contentType: mimeType,
+        upsert: false,
+      })
 
       if (upload.error) {
+        failed++
         results.push({ name: item.name, status: 'error', error: upload.error.message })
         continue
       }
 
-      const { data: signedUrlData } = await supabase.storage
-        .from('northvault-assets')
-        .createSignedUrl(storagePath, 60 * 60 * 24 * 365)
+      const { data: signedUrlData } = await supabase.storage.from('northvault-assets').createSignedUrl(storagePath, 60 * 60 * 24 * 365)
 
       const insert = await supabase
         .schema('northvault')
@@ -205,9 +152,9 @@ export async function POST(request: NextRequest) {
           content_type: contentType,
           storage_path: storagePath,
           storage_url: signedUrlData?.signedUrl ?? null,
-          business: item.business || business,
-          tags: Array.from(new Set([...tags, ...folderTags, ...(item.tags || [])])),
-          notes: folderNote || null,
+          business: item.business || 'both',
+          tags: Array.isArray(item.tags) ? item.tags : [],
+          notes: item.folderPath ? `Source: SharePoint > ${item.folderPath.split('/').map((s: string) => s.trim()).filter(Boolean).join(' > ')}` : null,
           uploaded_by: user.id,
           original_created_at: null,
         })
@@ -215,35 +162,39 @@ export async function POST(request: NextRequest) {
         .single()
 
       if (insert.error || !insert.data) {
+        failed++
         results.push({ name: item.name, status: 'error', error: insert.error?.message || 'db insert failed' })
         continue
       }
 
-      let aiTags: string[] = []
-      if (autoTag) {
-        try {
-          aiTags = await tagImageIfNeeded({
-            supabase,
-            assetId: insert.data.id,
-            storageUrl: signedUrlData?.signedUrl ?? null,
-            mimeType,
-          })
-        } catch (err) {
-          console.error('AI tagging failed:', err)
-        }
+      if (getContentType(mimeType, item.name) === 'image' && signedUrlData?.signedUrl) {
+        await tagImageIfNeeded({
+          supabase,
+          assetId: insert.data.id,
+          storageUrl: signedUrlData.signedUrl,
+          mimeType,
+        })
       }
 
-      results.push({
-        name: item.name,
-        status: 'done',
-        assetId: insert.data.id,
-        duplicate: false,
-        aiTags,
-      })
+      processed++
+      results.push({ name: item.name, status: 'done', assetId: insert.data.id })
     } catch (error) {
+      failed++
       results.push({ name: item.name, status: 'error', error: error instanceof Error ? error.message : 'unknown error' })
     }
   }
 
-  return NextResponse.json({ success: true, results })
+  await supabase
+    .schema('northvault')
+    .from('import_jobs')
+    .update({
+      processed_items: body.processedItems ?? processed,
+      failed_items: body.failedItems ?? failed,
+      last_cursor: body.lastCursor ?? null,
+      status: body.done ? 'completed' : 'running',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', jobId)
+
+  return NextResponse.json({ success: true, processed, failed, results, nextCursor: items.length > chunk.length ? chunk.length : null })
 }
