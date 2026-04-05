@@ -12,7 +12,7 @@ interface Props {
   onUpdateTags: (asset: Asset, tags: string[]) => void
   onUpdateNotes: (asset: Asset, notes: string) => void
   onUpdateBusiness: (asset: Asset, business: string) => void
-  onRename?: (asset: Asset, newName: string) => Promise<void>
+  onRename?: (asset: Asset, newName: string) => void
   userRole: string
 }
 
@@ -22,16 +22,23 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
   const [tagInput, setTagInput] = useState('')
   const [notes, setNotes] = useState(asset.notes ?? '')
   const [notesChanged, setNotesChanged] = useState(false)
-  const [isRenaming, setIsRenaming] = useState(false)
-  const [newName, setNewName] = useState(asset.file_name)
+  const [editingName, setEditingName] = useState(false)
+  const [nameInput, setNameInput] = useState(asset.file_name)
+  const [renaming, setRenaming] = useState(false)
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
   const [aiTagging, setAiTagging] = useState(false)
   const [aiTagError, setAiTagError] = useState<string | null>(null)
+
+  function showToast(message: string, type: 'success' | 'error') {
+    setToast({ message, type })
+    setTimeout(() => setToast(null), 3000)
+  }
 
   useEffect(() => {
     setNotes(asset.notes ?? '')
     setNotesChanged(false)
-    setNewName(asset.file_name)
-    setIsRenaming(false)
+    setNameInput(asset.file_name)
+    setEditingName(false)
 
     const path = asset.storage_path || asset.file_path
     if (path) {
@@ -43,6 +50,34 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
         })
     }
   }, [asset.id])
+
+  async function handleRename() {
+    const trimmed = nameInput.trim()
+    if (!trimmed || trimmed === asset.file_name) {
+      setEditingName(false)
+      return
+    }
+    setRenaming(true)
+    try {
+      const res = await fetch('/api/assets/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetId: asset.id, newName: trimmed }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        showToast(data.error || 'Rename failed', 'error')
+      } else {
+        showToast('Asset renamed successfully', 'success')
+        setEditingName(false)
+        if (onRename) onRename(asset, trimmed)
+      }
+    } catch {
+      showToast('Rename failed', 'error')
+    } finally {
+      setRenaming(false)
+    }
+  }
 
   async function handleDownload() {
     if (signedUrl) {
@@ -92,20 +127,6 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
     }
   }
 
-  async function handleRename() {
-    if (!onRename || !newName.trim() || newName === asset.file_name) {
-      setIsRenaming(false)
-      return
-    }
-    try {
-      await onRename(asset, newName.trim())
-      setIsRenaming(false)
-    } catch (err) {
-      console.error(err)
-      alert('Failed to rename asset')
-    }
-  }
-
   return (
     <div className="fixed inset-0 z-50 flex">
       {/* Backdrop */}
@@ -113,46 +134,63 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
 
       {/* Panel */}
       <div className="relative ml-auto w-full max-w-md h-full bg-white shadow-2xl flex flex-col overflow-hidden">
+        {/* Toast */}
+        {toast && (
+          <div className={`absolute top-4 left-4 right-4 z-10 px-4 py-3 rounded-lg text-sm font-medium shadow-lg transition-all ${
+            toast.type === 'success' ? 'bg-green-100 text-green-800 border border-green-200' : 'bg-red-100 text-red-800 border border-red-200'
+          }`}>
+            {toast.message}
+          </div>
+        )}
+
         {/* Header */}
-        <div className="px-6 py-4 border-b border-sage-200 bg-wood-50 space-y-1">
-          <div className="flex items-center justify-between">
-            {isRenaming ? (
-              <div className="flex-1 pr-4 flex gap-2">
-                <input
-                  type="text"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  className="flex-1 px-2 py-1 text-sm border border-vault-300 rounded focus:outline-none focus:ring-1 focus:ring-vault-500"
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleRename()
-                    if (e.key === 'Escape') { setIsRenaming(false); setNewName(asset.file_name) }
-                  }}
-                />
-                <button onClick={handleRename} className="text-vault-600 hover:text-vault-800">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                </button>
-              </div>
-            ) : (
-              <h2 className="text-base font-semibold text-sage-950 truncate pr-4">{asset.file_name}</h2>
-            )}
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {onRename && !isRenaming && (
-                <button onClick={() => setIsRenaming(true)} className="text-sage-400 hover:text-vault-600 p-1">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                  </svg>
-                </button>
-              )}
-              <button onClick={onClose} className="text-sage-400 hover:text-sage-600">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+          {editingName ? (
+            <div className="flex items-center gap-2 flex-1 pr-2">
+              <input
+                autoFocus
+                type="text"
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleRename()
+                  if (e.key === 'Escape') { setEditingName(false); setNameInput(asset.file_name) }
+                }}
+                className="flex-1 px-2 py-1 border border-slate-300 rounded text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+              />
+              <button
+                onClick={handleRename}
+                disabled={renaming}
+                className="text-xs px-2 py-1 bg-slate-900 text-white rounded hover:bg-slate-800 disabled:opacity-50"
+              >
+                {renaming ? '...' : 'Save'}
+              </button>
+              <button
+                onClick={() => { setEditingName(false); setNameInput(asset.file_name) }}
+                className="text-xs px-2 py-1 border border-slate-300 rounded hover:bg-slate-100"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 flex-1 pr-2 min-w-0">
+              <h2 className="text-base font-semibold text-slate-900 truncate">{asset.file_name}</h2>
+              <button
+                onClick={() => setEditingName(true)}
+                title="Rename"
+                className="text-slate-400 hover:text-slate-600 flex-shrink-0"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                 </svg>
               </button>
             </div>
-          </div>
+          )}
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 flex-shrink-0">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
 
         {/* Content */}

@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Northvault — Brand Asset Management',
+  title: 'NorthVault — Brand Asset Management',
   description: 'Internal digital asset management for Nature\'s Storehouse and ADK Fragrance Farm',
 }
 
@@ -13,7 +13,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full">
-      <body className="min-h-full flex flex-col bg-wood-50 text-sage-950">
+      <body className="min-h-full flex flex-col bg-[#faf9f7] text-stone-800">
         {children}
       </body>
     </html>

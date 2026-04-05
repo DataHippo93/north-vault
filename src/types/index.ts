@@ -23,12 +23,13 @@ export interface Asset {
 
 export interface UploadFile {
   file: File
-  status: 'pending' | 'hashing' | 'checking' | 'uploading' | 'done' | 'duplicate' | 'error'
+  status: 'pending' | 'hashing' | 'checking' | 'uploading' | 'tagging' | 'done' | 'duplicate' | 'error'
   progress: number
   hash?: string
   assetId?: string
   duplicateOf?: { id: string; file_name: string }
   error?: string
+  aiTags?: string[]
 }
 
 export interface SearchFilters {

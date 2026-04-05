@@ -507,6 +507,28 @@ export default function LibraryClient({ userId, userRole }: Props) {
           </select>
         </div>
 
+        {/* Date range filters */}
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500 whitespace-nowrap">From</label>
+            <input
+              type="date"
+              value={filters.dateFrom ?? ''}
+              onChange={(e) => setFilters(f => ({ ...f, dateFrom: e.target.value || undefined }))}
+              className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 bg-white"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500 whitespace-nowrap">To</label>
+            <input
+              type="date"
+              value={filters.dateTo ?? ''}
+              onChange={(e) => setFilters(f => ({ ...f, dateTo: e.target.value || undefined }))}
+              className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 bg-white"
+            />
+          </div>
+        </div>
+
         {/* Content type filters */}
         <div className="flex flex-wrap gap-2">
           {contentTypeOptions.map(type => (
@@ -529,7 +551,7 @@ export default function LibraryClient({ userId, userRole }: Props) {
               {type.charAt(0).toUpperCase() + type.slice(1)}
             </button>
           ))}
-          {(filters.contentTypes.length > 0 || filters.query || filters.businessEntity !== 'all') && (
+          {(filters.contentTypes.length > 0 || filters.query || filters.businessEntity !== 'all' || filters.dateFrom || filters.dateTo || filters.tags.length > 0) && (
             <button
               onClick={() => setFilters(defaultFilters)}
               className="px-3 py-1 rounded-full text-xs font-medium text-sage-500 hover:text-sage-900 border border-sage-200 hover:border-sage-300"

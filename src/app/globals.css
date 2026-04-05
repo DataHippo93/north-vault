@@ -41,14 +41,25 @@
 }
 
 :root {
-  --background: #fdfaf7; /* wood-50 */
-  --foreground: #1a1f1b; /* sage-950 */
+  --background: #faf9f7;
+  --foreground: #2c2c2c;
+  --sage-50: #f4f7f1;
+  --sage-100: #e8f0e0;
+  --sage-200: #d3e2c4;
+  --sage-500: #6b7f5e;
+  --sage-600: #5a6b4f;
+  --sage-700: #4a5a3f;
+  --sage-800: #3d4b34;
+  --stone-warm: #f5f3f0;
+  --wood-500: #8b7355;
+  --wood-600: #7a6349;
+  --wood-700: #6b5540;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
 
 * {
