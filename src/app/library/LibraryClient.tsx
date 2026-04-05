@@ -31,6 +31,15 @@ export default function LibraryClient({ userId, userRole }: Props) {
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [tagInput, setTagInput] = useState('')
+  const [sharePointFolderUrl, setSharePointFolderUrl] = useState('')
+  const [sharePointItemsJson, setSharePointItemsJson] = useState('')
+  const [bulkImportStatus, setBulkImportStatus] = useState<string | null>(null)
+  const [bulkImporting, setBulkImporting] = useState(false)
+  const [spBrowseFiles, setSpBrowseFiles] = useState<Array<{ name: string; size: number; mimeType: string; downloadUrl: string; webUrl: string; isFolder: boolean }>>([])
+  const [spBrowseLoading, setSpBrowseLoading] = useState(false)
+  const [spBrowseError, setSpBrowseError] = useState<string | null>(null)
+  const [spSelectedFiles, setSpSelectedFiles] = useState<Set<number>>(new Set())
+  const [spMode, setSpMode] = useState<'browse' | 'json'>('browse')
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
@@ -128,7 +137,6 @@ export default function LibraryClient({ userId, userRole }: Props) {
     const data = await res.json()
     if (data.error) throw new Error(data.error)
     loadAssets()
-    // Update selected asset to reflect new name
     if (selectedAsset?.id === asset.id) {
       setSelectedAsset({ ...asset, file_name: data.newFileName, storage_path: data.newPath })
     }
@@ -164,6 +172,122 @@ export default function LibraryClient({ userId, userRole }: Props) {
     }
     setTagInput('')
     loadAssets()
+  }
+
+  async function handleBulkImportFromSharePoint() {
+    if (!sharePointItemsJson.trim()) {
+      setBulkImportStatus('Paste a JSON array of SharePoint items first.')
+      return
+    }
+
+    setBulkImporting(true)
+    setBulkImportStatus('Starting import...')
+
+    try {
+      const items = JSON.parse(sharePointItemsJson)
+      const res = await fetch('/api/assets/import-sharepoint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          folderUrl: sharePointFolderUrl || undefined,
+          items,
+          autoTag: true,
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.error || 'SharePoint import failed')
+      }
+
+      const counts = data.results.reduce((acc: { done: number; duplicate: number; error: number }, item: any) => {
+        acc[item.status as keyof typeof acc] = (acc[item.status as keyof typeof acc] || 0) + 1
+        return acc
+      }, { done: 0, duplicate: 0, error: 0 })
+
+      setBulkImportStatus(`Imported ${counts.done}, skipped ${counts.duplicate} duplicates, ${counts.error} errors.`)
+      setSharePointItemsJson('')
+      loadAssets()
+    } catch (err) {
+      setBulkImportStatus(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setBulkImporting(false)
+    }
+  }
+
+  async function handleSharePointBrowse() {
+    if (!sharePointFolderUrl.trim()) {
+      setSpBrowseError('Enter a SharePoint folder URL first.')
+      return
+    }
+    setSpBrowseLoading(true)
+    setSpBrowseError(null)
+    setSpBrowseFiles([])
+    setSpSelectedFiles(new Set())
+
+    try {
+      const res = await fetch('/api/sharepoint/browse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderUrl: sharePointFolderUrl }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Browse failed')
+      setSpBrowseFiles(data.files || [])
+    } catch (err) {
+      setSpBrowseError(err instanceof Error ? err.message : 'Browse failed')
+    } finally {
+      setSpBrowseLoading(false)
+    }
+  }
+
+  async function handleImportSelectedSharePointFiles() {
+    const filesToImport = spBrowseFiles.filter((_, i) => spSelectedFiles.has(i)).filter(f => !f.isFolder)
+    if (!filesToImport.length) {
+      setBulkImportStatus('Select at least one file to import.')
+      return
+    }
+
+    setBulkImporting(true)
+    setBulkImportStatus('Starting import...')
+
+    try {
+      const items = filesToImport.map(f => ({
+        name: f.name,
+        url: f.downloadUrl,
+        size: f.size,
+        mimeType: f.mimeType,
+      }))
+
+      const res = await fetch('/api/assets/import-sharepoint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          folderUrl: sharePointFolderUrl || undefined,
+          items,
+          autoTag: true,
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Import failed')
+
+      const counts = data.results.reduce(
+        (acc: { done: number; duplicate: number; error: number }, item: { status: string }) => {
+          acc[item.status as keyof typeof acc] = (acc[item.status as keyof typeof acc] || 0) + 1
+          return acc
+        },
+        { done: 0, duplicate: 0, error: 0 },
+      )
+
+      setBulkImportStatus(`Imported ${counts.done}, skipped ${counts.duplicate} duplicates, ${counts.error} errors.`)
+      setSpSelectedFiles(new Set())
+      loadAssets()
+    } catch (err) {
+      setBulkImportStatus(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setBulkImporting(false)
+    }
   }
 
   const contentTypeOptions: ContentType[] = ['image', 'video', 'pdf', 'document', 'adobe', 'other']
@@ -208,6 +332,140 @@ export default function LibraryClient({ userId, userRole }: Props) {
             </svg>
           </button>
         </div>
+      </div>
+
+      {/* SharePoint bulk import */}
+      <div className="bg-white rounded-xl border border-sage-200 p-4 space-y-3 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-sage-900">Bulk import from SharePoint</h2>
+            <p className="text-sm text-sage-500">Browse a SharePoint folder or paste a pre-enumerated item list. Dedup runs first, then AI tagging.</p>
+          </div>
+          <div className="flex rounded-lg border border-sage-300 overflow-hidden text-xs">
+            <button
+              onClick={() => setSpMode('browse')}
+              className={`px-3 py-1.5 font-medium transition-colors ${spMode === 'browse' ? 'bg-sage-950 text-white' : 'text-sage-600 hover:bg-sage-100'}`}
+            >
+              Browse
+            </button>
+            <button
+              onClick={() => setSpMode('json')}
+              className={`px-3 py-1.5 font-medium transition-colors ${spMode === 'json' ? 'bg-sage-950 text-white' : 'text-sage-600 hover:bg-sage-100'}`}
+            >
+              Paste JSON
+            </button>
+          </div>
+        </div>
+
+        <input
+          type="text"
+          value={sharePointFolderUrl}
+          onChange={(e) => setSharePointFolderUrl(e.target.value)}
+          placeholder="SharePoint folder URL, e.g. https://tenant.sharepoint.com/sites/MySite/Shared Documents/Photos"
+          className="w-full px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500"
+        />
+
+        {spMode === 'browse' ? (
+          <>
+            <button
+              onClick={handleSharePointBrowse}
+              disabled={spBrowseLoading}
+              className="px-4 py-2 bg-sage-950 text-white rounded-lg text-sm font-medium hover:bg-sage-800 disabled:opacity-50"
+            >
+              {spBrowseLoading ? 'Loading...' : 'Browse Folder'}
+            </button>
+
+            {spBrowseError && <p className="text-sm text-red-600">{spBrowseError}</p>}
+
+            {spBrowseFiles.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-3 text-sm text-sage-600">
+                  <span>{spBrowseFiles.length} items found</span>
+                  <button
+                    onClick={() => {
+                      const allFileIndexes = spBrowseFiles
+                        .map((f, i) => (!f.isFolder ? i : -1))
+                        .filter((i) => i >= 0)
+                      setSpSelectedFiles(new Set(allFileIndexes))
+                    }}
+                    className="text-vault-700 hover:text-vault-900 underline"
+                  >
+                    Select all files
+                  </button>
+                  {spSelectedFiles.size > 0 && (
+                    <button
+                      onClick={() => setSpSelectedFiles(new Set())}
+                      className="text-sage-500 hover:text-sage-700 underline"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <div className="max-h-64 overflow-y-auto border border-sage-200 rounded-lg divide-y divide-sage-100">
+                  {spBrowseFiles.map((file, idx) => (
+                    <label
+                      key={idx}
+                      className={`flex items-center gap-3 px-3 py-2 text-sm cursor-pointer hover:bg-sage-50 ${
+                        file.isFolder ? 'opacity-60' : ''
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        disabled={file.isFolder}
+                        checked={spSelectedFiles.has(idx)}
+                        onChange={() => {
+                          setSpSelectedFiles((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(idx)) next.delete(idx)
+                            else next.add(idx)
+                            return next
+                          })
+                        }}
+                        className="rounded border-sage-300 text-vault-600 focus:ring-vault-500"
+                      />
+                      <span className="truncate flex-1 text-sage-900">
+                        {file.isFolder ? '\uD83D\uDCC1 ' : ''}{file.name}
+                      </span>
+                      <span className="text-sage-400 text-xs whitespace-nowrap">
+                        {file.isFolder ? `${file.size} items` : formatFileSize(file.size)}
+                      </span>
+                      <span className="text-sage-400 text-xs truncate max-w-[140px]">{file.mimeType}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleImportSelectedSharePointFiles}
+                    disabled={bulkImporting || spSelectedFiles.size === 0}
+                    className="px-4 py-2 bg-vault-600 text-white rounded-lg text-sm font-medium hover:bg-vault-700 disabled:opacity-50"
+                  >
+                    {bulkImporting ? 'Importing...' : `Import ${spSelectedFiles.size} selected`}
+                  </button>
+                  {bulkImportStatus && <span className="text-sm text-sage-600">{bulkImportStatus}</span>}
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <textarea
+              value={sharePointItemsJson}
+              onChange={(e) => setSharePointItemsJson(e.target.value)}
+              placeholder='Paste JSON array of items, e.g. [{"name":"photo.jpg","url":"https://...","mimeType":"image/jpeg","size":12345}]'
+              className="w-full min-h-32 px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500 font-mono"
+            />
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleBulkImportFromSharePoint}
+                disabled={bulkImporting}
+                className="px-4 py-2 bg-vault-600 text-white rounded-lg text-sm font-medium hover:bg-vault-700 disabled:opacity-50"
+              >
+                {bulkImporting ? 'Importing...' : 'Import from JSON'}
+              </button>
+              {bulkImportStatus && <span className="text-sm text-sage-600">{bulkImportStatus}</span>}
+            </div>
+          </>
+        )}
       </div>
 
       {/* Search & Filters */}
@@ -338,77 +596,37 @@ export default function LibraryClient({ userId, userRole }: Props) {
               key={asset.id}
               asset={asset}
               selected={selectedIds.has(asset.id)}
-              onSelect={(id) => setSelectedIds(prev => {
-                const next = new Set(prev)
-                if (next.has(id)) next.delete(id); else next.add(id)
-                return next
-              })}
               onClick={() => setSelectedAsset(asset)}
+              onSelect={(id) => {
+                setSelectedIds(prev => {
+                  const next = new Set(prev)
+                  if (next.has(id)) next.delete(id)
+                  else next.add(id)
+                  return next
+                })
+              }}
             />
           ))}
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-sage-200 overflow-hidden shadow-sm">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-sage-200 bg-sage-50">
-                <th className="text-left px-4 py-3 font-medium text-sage-600 w-8">
-                  <input
-                    type="checkbox"
-                    onChange={(e) => {
-                      if (e.target.checked) setSelectedIds(new Set(assets.map(a => a.id)))
-                      else setSelectedIds(new Set())
-                    }}
-                    checked={selectedIds.size === assets.length && assets.length > 0}
-                  />
-                </th>
-                <th className="text-left px-4 py-3 font-medium text-sage-600">Name</th>
-                <th className="text-left px-4 py-3 font-medium text-sage-600 hidden sm:table-cell">Type</th>
-                <th className="text-left px-4 py-3 font-medium text-sage-600 hidden md:table-cell">Business</th>
-                <th className="text-left px-4 py-3 font-medium text-sage-600 hidden md:table-cell">Size</th>
-                <th className="text-left px-4 py-3 font-medium text-sage-600 hidden lg:table-cell">Uploaded</th>
-              </tr>
-            </thead>
-            <tbody>
-              {assets.map(asset => (
-                <tr
-                  key={asset.id}
-                  className="border-b border-sage-100 hover:bg-sage-50 cursor-pointer"
-                  onClick={() => setSelectedAsset(asset)}
-                >
-                  <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.has(asset.id)}
-                      onChange={() => setSelectedIds(prev => {
-                        const next = new Set(prev)
-                        if (next.has(asset.id)) next.delete(asset.id); else next.add(asset.id)
-                        return next
-                      })}
-                    />
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-3">
-                      <FileTypeIcon type={asset.content_type as ContentType} />
-                      <span className="font-medium text-sage-900 truncate max-w-[200px]">{asset.file_name}</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 hidden sm:table-cell text-sage-500 capitalize">{asset.content_type}</td>
-                  <td className="px-4 py-3 hidden md:table-cell text-sage-500">
-                    {asset.business === 'natures' ? "Nature's" : asset.business === 'adk' ? 'ADK' : 'Both'}
-                  </td>
-                  <td className="px-4 py-3 hidden md:table-cell text-sage-500">{formatFileSize(asset.file_size)}</td>
-                  <td className="px-4 py-3 hidden lg:table-cell text-sage-500">
-                    {new Date(asset.created_at).toLocaleDateString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-2">
+          {assets.map(asset => (
+            <div key={asset.id} className="border border-sage-200 rounded-lg p-3 bg-white flex items-center justify-between">
+              <div className="min-w-0">
+                <div className="font-medium text-sage-900 truncate">{asset.file_name}</div>
+                <div className="text-xs text-sage-500">{formatFileSize(asset.file_size)} · {asset.content_type}</div>
+              </div>
+              <button
+                onClick={() => setSelectedAsset(asset)}
+                className="text-sm text-vault-700 hover:text-vault-900"
+              >
+                View
+              </button>
+            </div>
+          ))}
         </div>
       )}
 
-      {/* Asset detail panel */}
       {selectedAsset && (
         <AssetDetail
           asset={selectedAsset}
@@ -422,22 +640,5 @@ export default function LibraryClient({ userId, userRole }: Props) {
         />
       )}
     </div>
-  )
-}
-
-function FileTypeIcon({ type }: { type: ContentType }) {
-  const icons: Record<ContentType, { bg: string; text: string; letter: string }> = {
-    image: { bg: 'bg-vault-100', text: 'text-vault-700', letter: 'IMG' },
-    video: { bg: 'bg-wood-100', text: 'text-wood-700', letter: 'VID' },
-    pdf: { bg: 'bg-red-50', text: 'text-red-600', letter: 'PDF' },
-    document: { bg: 'bg-sage-100', text: 'text-sage-700', letter: 'DOC' },
-    adobe: { bg: 'bg-wood-100', text: 'text-wood-600', letter: 'AI' },
-    other: { bg: 'bg-sage-100', text: 'text-sage-500', letter: 'FILE' },
-  }
-  const { bg, text, letter } = icons[type] ?? icons.other
-  return (
-    <span className={`inline-flex items-center justify-center w-8 h-8 rounded-md text-[10px] font-bold ${bg} ${text}`}>
-      {letter}
-    </span>
   )
 }

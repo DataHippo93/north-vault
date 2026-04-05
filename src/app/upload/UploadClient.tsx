@@ -17,6 +17,7 @@ export default function UploadClient({ userId }: Props) {
   const [business, setBusiness] = useState<BusinessEntity>('both')
   const [tags, setTags] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [autoTagging, setAutoTagging] = useState(true)
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const newFiles: UploadFile[] = acceptedFiles.map(file => ({
@@ -111,8 +112,8 @@ export default function UploadClient({ userId }: Props) {
 
     updateFile(index, { status: 'done', progress: 100, assetId: asset.id })
 
-    // 6. Trigger AI Auto-Tagging
-    if (contentType === 'image') {
+    // 6. Trigger AI Auto-Tagging only after dedup + insert + explicit opt-in
+    if (autoTagging && contentType === 'image') {
       try {
         fetch('/api/assets/analyze', {
           method: 'POST',
@@ -178,6 +179,15 @@ export default function UploadClient({ userId }: Props) {
             />
           </div>
         </div>
+        <label className="flex items-center gap-2 text-sm text-sage-700">
+          <input
+            type="checkbox"
+            checked={autoTagging}
+            onChange={(e) => setAutoTagging(e.target.checked)}
+            className="rounded border-sage-300"
+          />
+          Automatically AI-tag images after dedup and upload
+        </label>
       </div>
 
       {/* Dropzone */}
