@@ -21,6 +21,7 @@ export interface Asset {
   thumbnail_path: string | null
   extracted_text: string[] | null
   barcodes: string[] | null
+  exif_data: Record<string, unknown> | null
 }
 
 export interface UploadFile {
@@ -32,6 +33,7 @@ export interface UploadFile {
   duplicateOf?: { id: string; file_name: string }
   error?: string
   aiTags?: string[]
+  folderTags?: string[]
 }
 
 export interface SearchFilters {

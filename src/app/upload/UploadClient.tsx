@@ -1,17 +1,21 @@
 'use client'
 
 import { useState, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { useDropzone } from 'react-dropzone'
 import { createClient } from '@/lib/supabase/client'
 import { computeSHA256, checkDuplicate } from '@/lib/utils/fileHash'
 import { formatFileSize, getContentType } from '@/lib/utils/fileType'
 import type { UploadFile, BusinessEntity } from '@/types'
+import JSZip from 'jszip'
+import exifr from 'exifr'
 
 interface Props {
   userId: string
 }
 
 export default function UploadClient({ userId }: Props) {
+  const router = useRouter()
   const supabase = createClient()
   const [files, setFiles] = useState<UploadFile[]>([])
   const [business, setBusiness] = useState<BusinessEntity>('both')
@@ -32,14 +36,59 @@ export default function UploadClient({ userId }: Props) {
   const [spBrowseError, setSpBrowseError] = useState<string | null>(null)
   const [spSelectedFiles, setSpSelectedFiles] = useState<Set<number>>(new Set())
   const [spMode, setSpMode] = useState<'browse' | 'json'>('browse')
+  // Folder navigation stack: each entry is { name, folderPath }
+  const [spFolderStack, setSpFolderStack] = useState<Array<{ name: string; folderPath: string }>>([])
+  const [spCurrentPath, setSpCurrentPath] = useState<string>('')
+
+  /** Expand ZIP files into individual UploadFile entries with folder-path tags */
+  async function expandFiles(acceptedFiles: File[]): Promise<UploadFile[]> {
+    const result: UploadFile[] = []
+    for (const file of acceptedFiles) {
+      if (
+        file.name.toLowerCase().endsWith('.zip') ||
+        file.type === 'application/zip' ||
+        file.type === 'application/x-zip-compressed'
+      ) {
+        try {
+          const zip = await JSZip.loadAsync(file)
+          for (const [relativePath, entry] of Object.entries(zip.files)) {
+            if (entry.dir) continue
+            const name = relativePath.split('/').pop() ?? relativePath
+            if (name.startsWith('.') || name.startsWith('__MACOSX')) continue
+            const blob = await entry.async('blob')
+            const innerFile = new File([blob], name, {
+              type: getContentType(blob.type, name) === 'image' ? 'image/jpeg' : blob.type,
+            })
+            // Build folder-path tags from the zip entry's directory structure
+            const parts = relativePath.split('/').slice(0, -1).filter(Boolean)
+            const folderTags =
+              parts.length > 0
+                ? [
+                    ...parts.map((p) =>
+                      p
+                        .toLowerCase()
+                        .replace(/[^a-z0-9\s-]/g, '')
+                        .trim(),
+                    ),
+                    `path:${parts.join('/')}`,
+                  ]
+                : []
+            result.push({ file: innerFile, status: 'pending', progress: 0, folderTags })
+          }
+        } catch {
+          result.push({ file, status: 'pending', progress: 0 })
+        }
+      } else {
+        result.push({ file, status: 'pending', progress: 0 })
+      }
+    }
+    return result
+  }
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    const newFiles: UploadFile[] = acceptedFiles.map((file) => ({
-      file,
-      status: 'pending',
-      progress: 0,
-    }))
-    setFiles((prev) => [...prev, ...newFiles])
+    expandFiles(acceptedFiles).then((expanded) => {
+      setFiles((prev) => [...prev, ...expanded])
+    })
   }, [])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -82,13 +131,52 @@ export default function UploadClient({ userId }: Props) {
   }
 
   async function uploadFile(uploadFile: UploadFile, index: number) {
-    const { file } = uploadFile
+    const { file, folderTags = [] } = uploadFile
     const manualTags = tags
       .split(',')
       .map((t) => t.trim().toLowerCase())
       .filter(Boolean)
 
-    // 1. Hash the file
+    // 1. Extract EXIF (images only, best-effort)
+    let exifData: Record<string, unknown> | null = null
+    let exifDateTaken: string | null = null
+    if (file.type.startsWith('image/')) {
+      try {
+        const exif = await exifr.parse(file, {
+          pick: [
+            'DateTimeOriginal',
+            'CreateDate',
+            'GPSLatitude',
+            'GPSLongitude',
+            'GPSAltitude',
+            'Make',
+            'Model',
+            'LensModel',
+            'ExposureTime',
+            'FNumber',
+            'ISO',
+          ],
+        })
+        if (exif && Object.keys(exif).length > 0) {
+          exifData = exif as Record<string, unknown>
+          const dt = exif.DateTimeOriginal ?? exif.CreateDate
+          if (dt instanceof Date) exifDateTaken = dt.toISOString()
+          // Add GPS location as a tag if present
+          if (
+            exif.GPSLatitude !== null &&
+            exif.GPSLatitude !== undefined &&
+            exif.GPSLongitude !== null &&
+            exif.GPSLongitude !== undefined
+          ) {
+            folderTags.push('geotagged')
+          }
+        }
+      } catch {
+        // EXIF not available — continue
+      }
+    }
+
+    // Hash the file
     updateFile(index, { status: 'hashing', progress: 5 })
     let hash: string
     try {
@@ -131,7 +219,7 @@ export default function UploadClient({ userId }: Props) {
     // 5. AI auto-tagging (parallel with DB insert prep)
     const contentType = getContentType(file.type, file.name)
     // eslint-disable-next-line prefer-const
-    let allTags = [...manualTags]
+    let allTags = [...new Set([...manualTags, ...folderTags])]
 
     if (aiTagging) {
       updateFile(index, { status: 'tagging', progress: 70 })
@@ -159,7 +247,8 @@ export default function UploadClient({ userId }: Props) {
         business,
         tags: allTags,
         uploaded_by: userId,
-        original_created_at: file.lastModified ? new Date(file.lastModified).toISOString() : null,
+        original_created_at: exifDateTaken ?? (file.lastModified ? new Date(file.lastModified).toISOString() : null),
+        exif_data: exifData,
       })
       .select()
       .single()
@@ -204,29 +293,62 @@ export default function UploadClient({ userId }: Props) {
     }
   }
 
-  async function handleSharePointBrowse() {
-    if (!sharePointFolderUrl.trim()) {
-      setSpBrowseError('Enter a SharePoint folder URL first.')
-      return
-    }
+  async function browseSharePointPath(folderPath: string, folderName?: string) {
     setSpBrowseLoading(true)
     setSpBrowseError(null)
     setSpBrowseFiles([])
     setSpSelectedFiles(new Set())
     try {
+      // Subfolder navigation: always use folderPath with the configured drive ID —
+      // this is reliable and avoids re-parsing the URL on every click.
+      // Only use the URL for the initial root browse (folderPath is empty).
+      const body: Record<string, string> = folderPath
+        ? { folderPath }
+        : sharePointFolderUrl.trim()
+          ? { folderUrl: sharePointFolderUrl }
+          : {}
+
       const res = await fetch('/api/sharepoint/browse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folderUrl: sharePointFolderUrl }),
+        body: JSON.stringify(body),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Browse failed')
       setSpBrowseFiles(data.files || [])
+      // Use the API-returned folderPath so breadcrumb stays in sync with the
+      // actual location (important when the URL itself points to a subfolder).
+      const resolvedPath: string = data.folderPath ?? folderPath
+      setSpCurrentPath(resolvedPath)
+      if (folderName !== undefined) {
+        setSpFolderStack((prev) => [...prev, { name: folderName, folderPath: resolvedPath }])
+      }
     } catch (err) {
       setSpBrowseError(err instanceof Error ? err.message : 'Browse failed')
     } finally {
       setSpBrowseLoading(false)
     }
+  }
+
+  async function handleSharePointBrowse() {
+    setSpFolderStack([])
+    setSpCurrentPath('')
+    await browseSharePointPath('')
+  }
+
+  function handleSpNavigateBack(targetIndex: number) {
+    const newStack = spFolderStack.slice(0, targetIndex)
+    // targetIndex 0 → go back to root (use URL or drive root)
+    // otherwise → navigate to the stored folderPath of the target breadcrumb entry
+    const targetPath = targetIndex === 0 ? '' : (newStack[newStack.length - 1]?.folderPath ?? '')
+    setSpFolderStack(newStack)
+    setSpCurrentPath(targetPath)
+    void browseSharePointPath(targetPath)
+  }
+
+  async function handleSpEnterFolder(folderName: string) {
+    const newPath = spCurrentPath ? `${spCurrentPath}/${folderName}` : folderName
+    await browseSharePointPath(newPath, folderName)
   }
 
   async function handleImportSelectedSharePointFiles() {
@@ -335,20 +457,45 @@ export default function UploadClient({ userId }: Props) {
 
           {spMode === 'browse' ? (
             <>
-              <button
-                onClick={handleSharePointBrowse}
-                disabled={spBrowseLoading}
-                className="rounded-lg bg-stone-900 px-4 py-2 text-sm font-medium text-white hover:bg-stone-800 disabled:opacity-50"
-              >
-                {spBrowseLoading ? 'Loading...' : 'Browse Folder'}
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleSharePointBrowse}
+                  disabled={spBrowseLoading}
+                  className="rounded-lg bg-stone-900 px-4 py-2 text-sm font-medium text-white hover:bg-stone-800 disabled:opacity-50"
+                >
+                  {spBrowseLoading ? 'Loading…' : spBrowseFiles.length > 0 ? 'Refresh' : 'Browse'}
+                </button>
+              </div>
+
+              {/* Breadcrumb */}
+              {(spFolderStack.length > 0 || spBrowseFiles.length > 0) && (
+                <div className="flex flex-wrap items-center gap-1 text-xs text-stone-500">
+                  <button
+                    onClick={() => handleSpNavigateBack(0)}
+                    className="font-medium text-[#4a5a3f] hover:underline"
+                  >
+                    Root
+                  </button>
+                  {spFolderStack.map((entry, i) => (
+                    <span key={i} className="flex items-center gap-1">
+                      <span>/</span>
+                      <button
+                        onClick={() => handleSpNavigateBack(i + 1)}
+                        className="font-medium text-[#4a5a3f] hover:underline"
+                      >
+                        {entry.name}
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
 
               {spBrowseError && <p className="text-sm text-red-600">{spBrowseError}</p>}
 
               {spBrowseFiles.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex items-center gap-3 text-sm text-stone-600">
-                    <span>{spBrowseFiles.length} items found</span>
+                    <span>{spBrowseFiles.filter((f) => !f.isFolder).length} files</span>
                     <button
                       onClick={() => {
                         const allFileIndexes = spBrowseFiles.map((f, i) => (!f.isFolder ? i : -1)).filter((i) => i >= 0)
@@ -367,36 +514,59 @@ export default function UploadClient({ userId }: Props) {
                       </button>
                     )}
                   </div>
-                  <div className="max-h-64 divide-y divide-stone-100 overflow-y-auto rounded-lg border border-stone-200">
-                    {spBrowseFiles.map((file, idx) => (
-                      <label
-                        key={idx}
-                        className={`flex cursor-pointer items-center gap-3 px-3 py-2 text-sm hover:bg-stone-50 ${file.isFolder ? 'opacity-60' : ''}`}
-                      >
-                        <input
-                          type="checkbox"
-                          disabled={file.isFolder}
-                          checked={spSelectedFiles.has(idx)}
-                          onChange={() => {
-                            setSpSelectedFiles((prev) => {
-                              const next = new Set(prev)
-                              if (next.has(idx)) next.delete(idx)
-                              else next.add(idx)
-                              return next
-                            })
-                          }}
-                          className="rounded border-stone-300 text-[#6b7f5e] focus:ring-[#6b7f5e]"
-                        />
-                        <span className="flex-1 truncate text-stone-900">
-                          {file.isFolder ? '📁 ' : ''}
-                          {file.name}
-                        </span>
-                        <span className="text-xs whitespace-nowrap text-stone-400">
-                          {file.isFolder ? `${file.size} items` : formatFileSize(file.size)}
-                        </span>
-                        <span className="max-w-[140px] truncate text-xs text-stone-400">{file.mimeType}</span>
-                      </label>
-                    ))}
+                  <div className="max-h-72 divide-y divide-stone-100 overflow-y-auto rounded-lg border border-stone-200">
+                    {spBrowseFiles.map((file, idx) =>
+                      file.isFolder ? (
+                        <div key={idx} className="flex w-full items-center gap-1 px-3 py-2 text-sm hover:bg-stone-50">
+                          <button
+                            onClick={() => handleSpEnterFolder(file.name)}
+                            className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                          >
+                            <span className="text-base">📁</span>
+                            <span className="flex-1 truncate font-medium text-stone-700">{file.name}</span>
+                            <svg
+                              className="h-4 w-4 shrink-0 text-stone-400"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                          </button>
+                          {file.webUrl && (
+                            <button
+                              onClick={() => router.push(`/admin/import?url=${encodeURIComponent(file.webUrl)}`)}
+                              title="Import this folder recursively"
+                              className="ml-1 shrink-0 rounded px-2 py-1 text-xs font-medium text-[#4a5a3f] hover:bg-[#f0f4ec]"
+                            >
+                              Import all
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <label
+                          key={idx}
+                          className="flex cursor-pointer items-center gap-3 px-3 py-2 text-sm hover:bg-stone-50"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={spSelectedFiles.has(idx)}
+                            onChange={() => {
+                              setSpSelectedFiles((prev) => {
+                                const next = new Set(prev)
+                                if (next.has(idx)) next.delete(idx)
+                                else next.add(idx)
+                                return next
+                              })
+                            }}
+                            className="rounded border-stone-300 text-[#6b7f5e] focus:ring-[#6b7f5e]"
+                          />
+                          <span className="flex-1 truncate text-stone-900">{file.name}</span>
+                          <span className="text-xs whitespace-nowrap text-stone-400">{formatFileSize(file.size)}</span>
+                          <span className="max-w-[120px] truncate text-xs text-stone-400">{file.mimeType}</span>
+                        </label>
+                      ),
+                    )}
                   </div>
                   <div className="flex items-center gap-3">
                     <button
@@ -404,7 +574,7 @@ export default function UploadClient({ userId }: Props) {
                       disabled={bulkImporting || spSelectedFiles.size === 0}
                       className="rounded-lg bg-[#4a5a3f] px-4 py-2 text-sm font-medium text-white hover:bg-[#3d4b34] disabled:opacity-50"
                     >
-                      {bulkImporting ? 'Importing...' : `Import ${spSelectedFiles.size} selected`}
+                      {bulkImporting ? 'Importing…' : `Import ${spSelectedFiles.size} selected`}
                     </button>
                     {bulkImportStatus && <span className="text-sm text-stone-600">{bulkImportStatus}</span>}
                   </div>

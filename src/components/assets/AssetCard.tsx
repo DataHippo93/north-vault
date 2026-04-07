@@ -9,7 +9,7 @@ import { formatFileSize } from '@/lib/utils/fileType'
 interface Props {
   asset: Asset
   selected: boolean
-  onSelect: (id: string) => void
+  onSelect: (id: string, shiftKey: boolean) => void
   onClick: () => void
 }
 
@@ -56,7 +56,7 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
           className={`absolute top-2 left-2 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
           onClick={(e) => {
             e.stopPropagation()
-            onSelect(asset.id)
+            onSelect(asset.id, e.shiftKey)
           }}
         >
           <div

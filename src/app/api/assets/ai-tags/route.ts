@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import sharp from 'sharp'
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
@@ -53,14 +54,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to fetch image from storage' }, { status: 500 })
     }
     const arrayBuffer = await imageResponse.arrayBuffer()
-    imageBase64 = Buffer.from(arrayBuffer).toString('base64')
+    let imageBuffer: Buffer = Buffer.from(arrayBuffer)
 
-    // Determine media type — default to jpeg if unrecognized
-    const mimeType = asset.mime_type?.toLowerCase() ?? ''
-    if (mimeType.includes('png')) mediaType = 'image/png'
-    else if (mimeType.includes('gif')) mediaType = 'image/gif'
-    else if (mimeType.includes('webp')) mediaType = 'image/webp'
-    else mediaType = 'image/jpeg'
+    // Claude max dimension is 8000px — resize large images to fit within 4000px
+    // (4000px is plenty for analysis and avoids Claude limits on high-res DSLR photos)
+    const metadata = await sharp(imageBuffer).metadata()
+    const maxDim = Math.max(metadata.width ?? 0, metadata.height ?? 0)
+    if (maxDim > 4000) {
+      imageBuffer = await sharp(imageBuffer)
+        .resize({ width: 4000, height: 4000, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 85 })
+        .toBuffer()
+      mediaType = 'image/jpeg'
+    } else {
+      // Determine media type — default to jpeg if unrecognized
+      const mimeType = asset.mime_type?.toLowerCase() ?? ''
+      if (mimeType.includes('png')) mediaType = 'image/png'
+      else if (mimeType.includes('gif')) mediaType = 'image/gif'
+      else if (mimeType.includes('webp')) mediaType = 'image/webp'
+      else mediaType = 'image/jpeg'
+    }
+
+    imageBase64 = imageBuffer.toString('base64')
   } catch (err) {
     console.error('Image fetch error:', err)
     return NextResponse.json({ error: 'Failed to process image' }, { status: 500 })
@@ -77,7 +92,7 @@ export async function POST(request: NextRequest) {
   try {
     const message = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 256,
+      max_tokens: 1024,
       messages: [
         {
           role: 'user',
@@ -93,11 +108,21 @@ export async function POST(request: NextRequest) {
             {
               type: 'text',
               text: `Analyze this image and return a JSON object with these fields:
-- "tags": array of 5-10 lowercase descriptive tags (subject matter, colors, mood, business context — if identifiable as Nature's Storehouse grocery store or ADK Fragrance Farm, include that)
-- "extracted_text": array of all readable text found in the image (labels, signs, product names, descriptions, ingredients — exact text as written)
-- "barcodes": array of any barcode or QR code numbers/values visible in the image
 
-Return ONLY valid JSON, nothing else. Example: {"tags":["soap","natural","green"],"extracted_text":["Healing Woods CBD Soap","4oz"],"barcodes":["012345678901"]}`,
+- "tags": array of 10-20 lowercase descriptive tags covering ALL of the following categories where applicable:
+  • SUBJECT: what the product/object/scene is (e.g. "soap", "candle", "essential oil", "tincture")
+  • BACKGROUND: background style (e.g. "white background", "lifestyle", "outdoor", "studio", "rustic wood", "natural setting", "flat lay", "on-model")
+  • COLORS: dominant colors (e.g. "green", "purple", "earth tones", "neutral")
+  • MOOD/AESTHETIC: visual feel (e.g. "minimalist", "cozy", "natural", "artisan", "luxury", "organic")
+  • COMPOSITION: shot type (e.g. "close-up", "macro", "overhead", "group shot", "single product", "hero shot")
+  • SOCIAL MEDIA USE: inferred use case (e.g. "instagram-ready", "product launch", "story format", "banner", "square crop friendly")
+  • BRAND CONTEXT: if identifiable as Nature's Storehouse grocery store or ADK Fragrance Farm, include that; also include "cbd", "hemp", "fragrance", "food", "grocery", etc. as relevant
+  • SEASON/OCCASION: if applicable (e.g. "holiday", "summer", "fall", "gift")
+
+- "extracted_text": array of all readable text in the image (product names, labels, ingredients, signs, prices — exact text as written)
+- "barcodes": array of any barcode or QR code values visible
+
+Return ONLY valid JSON, nothing else. Example: {"tags":["soap","cbd","white background","minimalist","close-up","hero shot","natural","green","instagram-ready","adk fragrance farm"],"extracted_text":["Healing Woods CBD Soap","4oz","$12.99"],"barcodes":[]}`,
             },
           ],
         },

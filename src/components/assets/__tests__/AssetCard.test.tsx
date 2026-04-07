@@ -43,6 +43,7 @@ const mockAsset: Asset = {
   thumbnail_path: null,
   extracted_text: null,
   barcodes: null,
+  exif_data: null,
 }
 
 describe('AssetCard', () => {

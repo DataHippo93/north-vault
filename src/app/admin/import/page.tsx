@@ -1,11 +1,14 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
+import { Suspense } from 'react'
 import AppShell from '@/components/layout/AppShell'
 import ImportClient from './ImportClient'
 
 export default async function ImportPage() {
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
 
   if (!user) redirect('/auth/login')
 
@@ -20,7 +23,9 @@ export default async function ImportPage() {
 
   return (
     <AppShell userEmail={user.email} userRole="admin">
-      <ImportClient />
+      <Suspense>
+        <ImportClient />
+      </Suspense>
     </AppShell>
   )
 }

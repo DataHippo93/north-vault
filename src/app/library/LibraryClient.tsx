@@ -11,34 +11,38 @@ import AssetDetail from '@/components/assets/AssetDetail'
 interface Props {
   userId: string
   userRole: string
+  defaultBusiness: string | null
 }
 
-const defaultFilters: SearchFilters = {
-  query: '',
-  contentTypes: [],
-  businessEntity: 'all',
-  tags: [],
-}
-
-export default function LibraryClient({ userId: _userId, userRole }: Props) {
+export default function LibraryClient({ userId: _userId, userRole, defaultBusiness }: Props) {
   const supabase = createClient()
   const [assets, setAssets] = useState<Asset[]>([])
   const [loading, setLoading] = useState(true)
   const [view, setView] = useState<'grid' | 'list'>('grid')
-  const [filters, setFilters] = useState<SearchFilters>(defaultFilters)
+  const [filters, setFilters] = useState<SearchFilters>({
+    query: '',
+    contentTypes: [],
+    businessEntity: (defaultBusiness as BusinessEntity) ?? 'all',
+    tags: [],
+  })
   const [sortBy, setSortBy] = useState<'created_at' | 'file_name' | 'file_size'>('created_at')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [lastSelectedId, setLastSelectedId] = useState<string | null>(null)
   const [tagInput, setTagInput] = useState('')
+  const [bulkTagging, setBulkTagging] = useState(false)
+  const [bulkTagProgress, setBulkTagProgress] = useState<{ done: number; total: number } | null>(null)
+  const [bulkDeleting, setBulkDeleting] = useState(false)
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
     let query = supabase.schema('northvault').from('assets').select('*')
 
     if (filters.query) {
+      // Cast array columns to text so partial barcode/extracted-text search works
       query = query.or(
-        `file_name.ilike.%${filters.query}%,original_filename.ilike.%${filters.query}%,notes.ilike.%${filters.query}%`,
+        `file_name.ilike.%${filters.query}%,original_filename.ilike.%${filters.query}%,notes.ilike.%${filters.query}%,barcodes::text.ilike.%${filters.query}%,extracted_text::text.ilike.%${filters.query}%`,
       )
     }
 
@@ -136,6 +140,41 @@ export default function LibraryClient({ userId: _userId, userRole }: Props) {
     }
   }
 
+  async function handleTagAllUntagged() {
+    const untagged = assets.filter((a) => a.content_type === 'image' && (!a.tags || a.tags.length === 0))
+    if (untagged.length === 0) return
+    if (
+      !confirm(`AI-tag ${untagged.length} untagged image${untagged.length !== 1 ? 's' : ''}? This may take a minute.`)
+    )
+      return
+
+    setBulkTagging(true)
+    setBulkTagProgress({ done: 0, total: untagged.length })
+
+    for (let i = 0; i < untagged.length; i++) {
+      const asset = untagged[i]
+      try {
+        const res = await fetch('/api/assets/ai-tags', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetId: asset.id }),
+        })
+        const data = await res.json()
+        if (res.ok && data.tags?.length) {
+          const merged = Array.from(new Set([...(asset.tags ?? []), ...data.tags]))
+          await supabase.schema('northvault').from('assets').update({ tags: merged }).eq('id', asset.id)
+        }
+      } catch {
+        // skip failed asset, continue
+      }
+      setBulkTagProgress({ done: i + 1, total: untagged.length })
+    }
+
+    setBulkTagging(false)
+    setBulkTagProgress(null)
+    loadAssets()
+  }
+
   async function handleBulkTag(tag: string) {
     if (!tag.trim()) return
     const selected = assets.filter((a) => selectedIds.has(a.id))
@@ -153,6 +192,45 @@ export default function LibraryClient({ userId: _userId, userRole }: Props) {
     loadAssets()
   }
 
+  async function handleBulkDelete() {
+    const selected = assets.filter((a) => selectedIds.has(a.id))
+    if (
+      !confirm(`Permanently delete ${selected.length} asset${selected.length !== 1 ? 's' : ''}? This cannot be undone.`)
+    )
+      return
+    setBulkDeleting(true)
+    for (const asset of selected) {
+      const path = asset.storage_path || asset.file_path
+      if (path) await supabase.storage.from('northvault-assets').remove([path])
+      await supabase.schema('northvault').from('assets').delete().eq('id', asset.id)
+    }
+    setSelectedIds(new Set())
+    setLastSelectedId(null)
+    setBulkDeleting(false)
+    loadAssets()
+  }
+
+  function handleSelect(id: string, shiftKey: boolean) {
+    const idx = assets.findIndex((a) => a.id === id)
+    if (shiftKey && lastSelectedId !== null) {
+      const lastIdx = assets.findIndex((a) => a.id === lastSelectedId)
+      const [from, to] = lastIdx < idx ? [lastIdx, idx] : [idx, lastIdx]
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        for (let i = from; i <= to; i++) next.add(assets[i].id)
+        return next
+      })
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      })
+      setLastSelectedId(id)
+    }
+  }
+
   const contentTypeOptions: ContentType[] = ['image', 'video', 'pdf', 'document', 'adobe', 'other']
   const businessOptions = [
     { value: 'all', label: 'All businesses' },
@@ -167,6 +245,42 @@ export default function LibraryClient({ userId: _userId, userRole }: Props) {
       <div className="flex items-center justify-between">
         <h1 className="text-sage-950 text-2xl font-bold">Asset Library</h1>
         <div className="flex items-center gap-2">
+          {/* Tag all untagged */}
+          {(() => {
+            const untaggedCount = assets.filter(
+              (a) => a.content_type === 'image' && (!a.tags || a.tags.length === 0),
+            ).length
+            if (untaggedCount === 0) return null
+            return (
+              <button
+                onClick={handleTagAllUntagged}
+                disabled={bulkTagging}
+                className="border-vault-300 bg-vault-50 text-vault-700 hover:bg-vault-100 hidden items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-60 sm:inline-flex"
+              >
+                {bulkTagging && bulkTagProgress ? (
+                  <>
+                    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                    </svg>
+                    {bulkTagProgress.done}/{bulkTagProgress.total}
+                  </>
+                ) : (
+                  <>
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
+                      />
+                    </svg>
+                    Tag {untaggedCount} untagged
+                  </>
+                )}
+              </button>
+            )
+          })()}
           <Link
             href="/upload"
             className="hidden items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800 sm:inline-flex"
@@ -299,7 +413,14 @@ export default function LibraryClient({ userId: _userId, userRole }: Props) {
             filters.dateTo ||
             filters.tags.length > 0) && (
             <button
-              onClick={() => setFilters(defaultFilters)}
+              onClick={() =>
+                setFilters({
+                  query: '',
+                  contentTypes: [],
+                  businessEntity: (defaultBusiness as BusinessEntity) ?? 'all',
+                  tags: [],
+                })
+              }
               className="text-sage-500 hover:text-sage-900 border-sage-200 hover:border-sage-300 rounded-full border px-3 py-1 text-xs font-medium"
             >
               Clear filters
@@ -335,7 +456,17 @@ export default function LibraryClient({ userId: _userId, userRole }: Props) {
             </button>
           </div>
           <button
-            onClick={() => setSelectedIds(new Set())}
+            onClick={handleBulkDelete}
+            disabled={bulkDeleting}
+            className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-sm text-red-600 hover:bg-red-100 disabled:opacity-50"
+          >
+            {bulkDeleting ? 'Deleting…' : `Delete ${selectedIds.size}`}
+          </button>
+          <button
+            onClick={() => {
+              setSelectedIds(new Set())
+              setLastSelectedId(null)
+            }}
             className="text-vault-600 hover:text-vault-800 ml-auto text-sm"
           >
             Clear selection
@@ -372,14 +503,7 @@ export default function LibraryClient({ userId: _userId, userRole }: Props) {
               asset={asset}
               selected={selectedIds.has(asset.id)}
               onClick={() => setSelectedAsset(asset)}
-              onSelect={(id) => {
-                setSelectedIds((prev) => {
-                  const next = new Set(prev)
-                  if (next.has(id)) next.delete(id)
-                  else next.add(id)
-                  return next
-                })
-              }}
+              onSelect={handleSelect}
             />
           ))}
         </div>

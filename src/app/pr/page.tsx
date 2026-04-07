@@ -1,10 +1,12 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import AppShell from '@/components/layout/AppShell'
-import LibraryClient from './LibraryClient'
+import PRClient from './PRClient'
 import { getDefaultBusiness } from '@/lib/utils/domain'
 
-export default async function LibraryPage() {
+export const metadata = { title: 'PR & Media — NorthVault' }
+
+export default async function PRPage() {
   const supabase = await createClient()
   const {
     data: { user },
@@ -13,13 +15,13 @@ export default async function LibraryPage() {
   if (!user) redirect('/auth/login')
 
   const [{ data: profile }, defaultBusiness] = await Promise.all([
-    supabase.schema('northvault').from('profiles').select('role, name').eq('id', user.id).single(),
+    supabase.schema('northvault').from('profiles').select('email, name, role').eq('id', user.id).single(),
     getDefaultBusiness(),
   ])
 
   return (
-    <AppShell userEmail={user.email} userRole={profile?.role}>
-      <LibraryClient userId={user.id} userRole={profile?.role ?? 'viewer'} defaultBusiness={defaultBusiness} />
+    <AppShell userEmail={profile?.email ?? user.email} userRole={profile?.role}>
+      <PRClient defaultBusiness={defaultBusiness} />
     </AppShell>
   )
 }

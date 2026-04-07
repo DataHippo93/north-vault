@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useCallback } from 'react'
+import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import type { BusinessEntity } from '@/types'
 
@@ -15,7 +16,8 @@ interface FileResult {
 type ImportPhase = 'idle' | 'running' | 'complete' | 'error'
 
 export default function ImportClient() {
-  const [sharePointUrl, setSharePointUrl] = useState('')
+  const searchParams = useSearchParams()
+  const [sharePointUrl, setSharePointUrl] = useState(searchParams.get('url') ?? '')
   const [business, setBusiness] = useState<BusinessEntity>('both')
   const [aiTagging, setAiTagging] = useState(true)
   const [dryRun, setDryRun] = useState(false)

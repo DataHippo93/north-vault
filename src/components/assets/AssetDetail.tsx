@@ -38,6 +38,7 @@ export default function AssetDetail({
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
   const [aiTagging, setAiTagging] = useState(false)
   const [aiTagError, setAiTagError] = useState<string | null>(null)
+  const [aiRenaming, setAiRenaming] = useState(false)
 
   function showToast(message: string, type: 'success' | 'error') {
     setToast({ message, type })
@@ -143,6 +144,25 @@ export default function AssetDetail({
     }
   }
 
+  async function handleAiRename() {
+    setAiRenaming(true)
+    try {
+      const res = await fetch('/api/assets/ai-rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetId: asset.id }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      setNameInput(data.suggestedName)
+      setEditingName(true)
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'AI rename failed', 'error')
+    } finally {
+      setAiRenaming(false)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex">
       {/* Backdrop */}
@@ -215,6 +235,23 @@ export default function AssetDetail({
                   />
                 </svg>
               </button>
+              <button
+                onClick={handleAiRename}
+                disabled={aiRenaming}
+                title="AI Rename — suggest a name from tags and content"
+                className="text-vault-400 hover:text-vault-600 flex-shrink-0 disabled:opacity-40"
+              >
+                {aiRenaming ? (
+                  <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                  </svg>
+                ) : (
+                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                )}
+              </button>
             </div>
           )}
           <button onClick={onClose} className="flex-shrink-0 text-slate-400 hover:text-slate-600">
@@ -259,7 +296,32 @@ export default function AssetDetail({
               <Row label="MIME" value={asset.mime_type} />
               <Row label="Uploaded" value={new Date(asset.created_at).toLocaleString()} />
               {asset.original_created_at && (
-                <Row label="Original date" value={new Date(asset.original_created_at).toLocaleDateString()} />
+                <Row label="Date taken" value={new Date(asset.original_created_at).toLocaleString()} />
+              )}
+              {asset.exif_data && (
+                <>
+                  {(asset.exif_data.Make || asset.exif_data.Model) && (
+                    <Row
+                      label="Camera"
+                      value={[asset.exif_data.Make, asset.exif_data.Model].filter(Boolean).join(' ') as string}
+                    />
+                  )}
+                  {asset.exif_data.GPSLatitude !== null &&
+                    asset.exif_data.GPSLatitude !== undefined &&
+                    asset.exif_data.GPSLongitude !== null &&
+                    asset.exif_data.GPSLongitude !== undefined && (
+                      <Row
+                        label="Location"
+                        value={`${(asset.exif_data.GPSLatitude as number).toFixed(5)}, ${(asset.exif_data.GPSLongitude as number).toFixed(5)}`}
+                      />
+                    )}
+                  {asset.exif_data.FNumber !== null && asset.exif_data.FNumber !== undefined && (
+                    <Row label="Aperture" value={`f/${asset.exif_data.FNumber}`} />
+                  )}
+                  {asset.exif_data.ISO !== null && asset.exif_data.ISO !== undefined && (
+                    <Row label="ISO" value={String(asset.exif_data.ISO)} />
+                  )}
+                </>
               )}
             </dl>
           </div>
@@ -339,6 +401,45 @@ export default function AssetDetail({
               </button>
             </div>
           </div>
+
+          {/* Barcodes */}
+          {asset.barcodes && asset.barcodes.length > 0 && (
+            <div className="space-y-2">
+              <h3 className="text-sage-500 text-xs font-semibold tracking-wider uppercase">Barcodes</h3>
+              <div className="flex flex-wrap gap-2">
+                {asset.barcodes.map((barcode) => (
+                  <span
+                    key={barcode}
+                    className="border-sage-200 bg-sage-50 text-sage-700 flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-xs"
+                  >
+                    <svg className="h-3 w-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4 6h1v12H4zm3 0h1v12H7zm2 0h2v12H9zm3 0h1v12h-1zm2 0h1v12h-1zm2 0h2v12h-2z"
+                      />
+                    </svg>
+                    {barcode}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Extracted text */}
+          {asset.extracted_text && asset.extracted_text.length > 0 && (
+            <div className="space-y-2">
+              <h3 className="text-sage-500 text-xs font-semibold tracking-wider uppercase">Extracted Text</h3>
+              <div className="border-sage-100 bg-sage-50 max-h-32 overflow-y-auto rounded-lg border px-3 py-2">
+                {asset.extracted_text.map((line, i) => (
+                  <p key={i} className="text-sage-700 text-xs leading-relaxed">
+                    {line}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Notes */}
           <div className="space-y-2">

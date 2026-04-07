@@ -8,6 +8,8 @@ export const env = createEnv({
     AZURE_TENANT_ID: z.string().uuid(),
     AZURE_CLIENT_ID: z.string().uuid(),
     AZURE_CLIENT_SECRET: z.string().min(1),
+    LOBSTER_SUPABASE_URL: z.string().url(),
+    LOBSTER_SUPABASE_SERVICE_KEY: z.string().min(1),
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   },
   client: {
@@ -21,6 +23,8 @@ export const env = createEnv({
     AZURE_TENANT_ID: process.env.AZURE_TENANT_ID,
     AZURE_CLIENT_ID: process.env.AZURE_CLIENT_ID,
     AZURE_CLIENT_SECRET: process.env.AZURE_CLIENT_SECRET,
+    LOBSTER_SUPABASE_URL: process.env.LOBSTER_SUPABASE_URL,
+    LOBSTER_SUPABASE_SERVICE_KEY: process.env.LOBSTER_SUPABASE_SERVICE_KEY,
     NODE_ENV: process.env.NODE_ENV,
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,

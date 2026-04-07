@@ -75,11 +75,28 @@ function parseSharePointUrl(url: string): { hostname: string; sitePath: string; 
 
     const sitePath = `/sites/${siteMatch[1]}`
 
-    // Extract the folder path after "Shared Documents" or "Documents"
-    const docMatch = parsed.pathname.match(/\/(?:Shared Documents|Documents|Shared%20Documents)\/?(.*)?/)
-    const itemPath = docMatch?.[1]
-      ? decodeURIComponent(docMatch[1]).replace(/\/$/, '')
-      : ''
+    // AllItems.aspx view URLs encode the folder in the `id` query param:
+    // ?id=%2Fsites%2Fadkfragrancefarm%2FShared%20Documents%2FContent%20Marketing
+    let itemPath = ''
+    const idParam = parsed.searchParams.get('id')
+    if (idParam) {
+      const decoded = decodeURIComponent(idParam)
+      const docMatch = decoded.match(/\/(?:Shared Documents|Documents)\/(.+)$/)
+      if (docMatch) {
+        itemPath = docMatch[1].replace(/\/Forms\/AllItems\.aspx$/, '').trim()
+      }
+    }
+
+    // Fall back to extracting from the pathname
+    if (!itemPath) {
+      const docMatch = parsed.pathname.match(/\/(?:Shared Documents|Documents|Shared%20Documents)\/?(.*)?/)
+      itemPath = docMatch?.[1]
+        ? decodeURIComponent(docMatch[1])
+            .replace(/\/Forms\/AllItems\.aspx$/, '')
+            .replace(/\/$/, '')
+            .trim()
+        : ''
+    }
 
     return { hostname, sitePath, itemPath }
   } catch {
@@ -89,7 +106,9 @@ function parseSharePointUrl(url: string): { hostname: string; sitePath: string; 
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
 
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -105,16 +124,19 @@ export async function POST(request: NextRequest) {
   // --- Resolve Graph endpoint ---
   let graphEndpoint: string
 
-  if (driveId && folderId) {
+  // Resolve driveId: explicit param wins, then fall back to configured default
+  const resolvedDriveId = driveId ?? process.env.SHAREPOINT_ADK_DRIVE_ID
+
+  if (resolvedDriveId && folderId) {
     // Direct drive + folder ID
-    graphEndpoint = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${folderId}/children`
-  } else if (driveId && folderPath) {
-    // Drive ID + path
-    const encodedPath = encodeURIComponent(folderPath).replace(/%2F/g, '/')
-    graphEndpoint = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedPath}:/children`
-  } else if (driveId) {
+    graphEndpoint = `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${folderId}/children`
+  } else if (resolvedDriveId && folderPath) {
+    // Drive ID + path — encode each segment individually to preserve slashes
+    const encodedPath = folderPath.split('/').map(encodeURIComponent).join('/')
+    graphEndpoint = `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/root:/${encodedPath}:/children`
+  } else if (resolvedDriveId && !siteId && !folderUrl) {
     // Drive root
-    graphEndpoint = `https://graph.microsoft.com/v1.0/drives/${driveId}/root/children`
+    graphEndpoint = `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/root/children`
   } else if (siteId) {
     // Get default drive for site, then list root or path
     graphEndpoint = folderPath
@@ -124,9 +146,13 @@ export async function POST(request: NextRequest) {
     // Parse a SharePoint URL
     const parsed = parseSharePointUrl(folderUrl)
     if (!parsed) {
-      return NextResponse.json({
-        error: 'Could not parse SharePoint URL. Expected format: https://{tenant}.sharepoint.com/sites/{site}/Shared Documents/{path}',
-      }, { status: 400 })
+      return NextResponse.json(
+        {
+          error:
+            'Could not parse SharePoint URL. Expected format: https://{tenant}.sharepoint.com/sites/{site}/Shared Documents/{path}',
+        },
+        { status: 400 },
+      )
     }
 
     // First resolve the site ID from the hostname + site path
@@ -134,13 +160,15 @@ export async function POST(request: NextRequest) {
     try {
       token = await getGraphToken()
     } catch (err) {
-      return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed to get Graph token' }, { status: 500 })
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : 'Failed to get Graph token' },
+        { status: 500 },
+      )
     }
 
-    const siteRes = await fetch(
-      `https://graph.microsoft.com/v1.0/sites/${parsed.hostname}:${parsed.sitePath}`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    )
+    const siteRes = await fetch(`https://graph.microsoft.com/v1.0/sites/${parsed.hostname}:${parsed.sitePath}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
 
     if (!siteRes.ok) {
       const errText = await siteRes.text()
@@ -154,9 +182,17 @@ export async function POST(request: NextRequest) {
       ? `https://graph.microsoft.com/v1.0/sites/${resolvedSiteId}/drive/root:/${encodeURIComponent(parsed.itemPath).replace(/%2F/g, '/')}:/children`
       : `https://graph.microsoft.com/v1.0/sites/${resolvedSiteId}/drive/root/children`
   } else {
-    return NextResponse.json({
-      error: 'Provide folderUrl, or siteId, or driveId (with optional folderId/folderPath)',
-    }, { status: 400 })
+    // Fall back to the configured ADK drive root
+    const defaultDriveId = process.env.SHAREPOINT_ADK_DRIVE_ID
+    if (!defaultDriveId) {
+      return NextResponse.json(
+        {
+          error: 'Provide folderUrl, siteId, or driveId. No default drive configured.',
+        },
+        { status: 400 },
+      )
+    }
+    graphEndpoint = `https://graph.microsoft.com/v1.0/drives/${defaultDriveId}/root/children`
   }
 
   // --- Fetch token if not already fetched ---
@@ -164,7 +200,10 @@ export async function POST(request: NextRequest) {
   try {
     token = await getGraphToken()
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed to get Graph token' }, { status: 500 })
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Failed to get Graph token' },
+      { status: 500 },
+    )
   }
 
   // --- List children ---

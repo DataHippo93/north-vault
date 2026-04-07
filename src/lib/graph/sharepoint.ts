@@ -47,9 +47,31 @@ export function parseSharePointUrl(url: string): {
   }
   const sitePath = pathMatch[1]
 
-  // Extract folder path after "Shared Documents" or "Documents"
-  const docMatch = u.pathname.match(/\/(?:Shared%20Documents|Shared Documents|Documents)\/?(.*?)(?:\/Forms\/AllItems\.aspx)?$/)
-  const folderPath = docMatch?.[1]?.replace(/\/Forms\/AllItems\.aspx$/, '').replace(/%20/g, ' ') || null
+  // AllItems.aspx view URLs encode the folder in the `id` query param:
+  // ?id=%2Fsites%2Fadkfragrancefarm%2FShared%20Documents%2FContent%20Marketing
+  // Try that first, then fall back to extracting from the pathname.
+  let folderPath: string | null = null
+
+  const idParam = u.searchParams.get('id')
+  if (idParam) {
+    const decoded = decodeURIComponent(idParam)
+    const docMatch = decoded.match(/\/(?:Shared Documents|Documents)\/(.+)$/)
+    if (docMatch) {
+      const extracted = docMatch[1].replace(/\/Forms\/AllItems\.aspx$/, '').trim()
+      folderPath = extracted || null
+    }
+  }
+
+  if (!folderPath) {
+    const docMatch = u.pathname.match(
+      /\/(?:Shared%20Documents|Shared Documents|Documents)\/?(.*?)(?:\/Forms\/AllItems\.aspx)?$/,
+    )
+    const extracted = docMatch?.[1]
+      ?.replace(/\/Forms\/AllItems\.aspx$/, '')
+      .replace(/%20/g, ' ')
+      .trim()
+    folderPath = extracted || null
+  }
 
   return { hostname, sitePath, folderPath }
 }
@@ -75,9 +97,9 @@ async function getDriveId(hostname: string, sitePath: string): Promise<string> {
   const drives = await drivesRes.json()
 
   // Find "Documents" or "Shared Documents" drive
-  const drive = drives.value.find((d: { name: string }) =>
-    d.name === 'Documents' || d.name === 'Shared Documents'
-  ) || drives.value[0]
+  const drive =
+    drives.value.find((d: { name: string }) => d.name === 'Documents' || d.name === 'Shared Documents') ||
+    drives.value[0]
 
   if (!drive) {
     throw new Error('No document library found on this site')
@@ -92,7 +114,7 @@ async function getDriveId(hostname: string, sitePath: string): Promise<string> {
 export async function* enumerateFiles(
   hostname: string,
   sitePath: string,
-  folderPath: string | null
+  folderPath: string | null,
 ): AsyncGenerator<SharePointFile> {
   const driveId = await getDriveId(hostname, sitePath)
 
@@ -104,17 +126,14 @@ export async function* enumerateFiles(
   yield* enumerateFolder(driveId, basePath)
 }
 
-async function* enumerateFolder(
-  driveId: string,
-  path: string
-): AsyncGenerator<SharePointFile> {
+async function* enumerateFolder(driveId: string, path: string): AsyncGenerator<SharePointFile> {
   let nextUrl: string | null = path
 
   while (nextUrl) {
     const isFullUrl: boolean = nextUrl.startsWith('http')
     const res: Response | null = isFullUrl
       ? await fetch(nextUrl, {
-          headers: { Authorization: `Bearer ${await getGraphToken()}` }
+          headers: { Authorization: `Bearer ${await getGraphToken()}` },
         }).catch(() => null)
       : await graphFetch(nextUrl)
 
@@ -136,9 +155,7 @@ async function* enumerateFolder(
           mimeType: item.file.mimeType,
           downloadUrl: item['@microsoft.graph.downloadUrl'],
           lastModified: item.lastModifiedDateTime,
-          path: item.parentReference?.path
-            ? decodeURIComponent(item.parentReference.path.replace(/^.*:/, ''))
-            : '',
+          path: item.parentReference?.path ? decodeURIComponent(item.parentReference.path.replace(/^.*:/, '')) : '',
         }
       }
     }

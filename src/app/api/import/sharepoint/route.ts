@@ -3,55 +3,120 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { parseSharePointUrl, enumerateFiles, downloadFile } from '@/lib/graph/sharepoint'
 import { computeSHA256Server } from '@/lib/utils/serverHash'
 import { getContentType } from '@/lib/utils/fileType'
+import Anthropic from '@anthropic-ai/sdk'
+import sharp from 'sharp'
 
-const AI_ENDPOINT = process.env.AI_ENDPOINT || 'http://localhost:3456'
-const AI_MODEL = process.env.AI_MODEL || 'claude-sonnet-4-20250514'
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-const TAG_SYSTEM_PROMPT = `You are a digital asset management tagging assistant. Given information about a file, suggest 3-8 relevant tags that would help organize it in a brand asset library. Tags should be lowercase, single words or short hyphenated phrases. Focus on:
-- Subject matter (e.g. product, logo, team, storefront, nature, food)
-- Visual style (e.g. lifestyle, flat-lay, close-up, aerial, minimalist)
-- Use case (e.g. social-media, packaging, print, web, banner)
-- Season/time (e.g. summer, holiday, 2024)
-- Color/mood (e.g. bright, moody, earth-tones)
+async function analyzeImageWithClaude(
+  buffer: Buffer,
+  mimeType: string,
+  fileName: string,
+  folderPath: string,
+): Promise<{ tags: string[]; extractedText: string[]; barcodes: string[] }> {
+  // Resize if needed — Claude max is 8000px, we target 4000px for speed
+  let imageBuffer = buffer
+  let mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' = 'image/jpeg'
 
-Respond with ONLY a JSON array of tag strings. No explanation, no markdown. Example: ["product","lifestyle","bright","summer","social-media"]`
-
-async function requestAiTags(fileName: string, mimeType: string, contentType: string): Promise<string[]> {
   try {
-    const response = await fetch(`${AI_ENDPOINT}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: AI_MODEL,
-        messages: [
-          { role: 'system', content: TAG_SYSTEM_PROMPT },
-          { role: 'user', content: `Suggest tags for this file based on its name and type. File name: "${fileName}", MIME type: ${mimeType}, content category: ${contentType}.` },
-        ],
-        max_tokens: 200,
-        temperature: 0.3,
-      }),
-    })
-
-    if (!response.ok) return []
-
-    const data = await response.json()
-    const raw = data.choices?.[0]?.message?.content?.trim() ?? '[]'
-    const cleaned = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
-    const tags = JSON.parse(cleaned)
-    if (!Array.isArray(tags)) return []
-    return tags
-      .map((t: unknown) => String(t).trim().toLowerCase())
-      .filter((t: string) => t.length > 0 && t.length < 50)
-      .slice(0, 10)
+    const metadata = await sharp(imageBuffer).metadata()
+    const maxDim = Math.max(metadata.width ?? 0, metadata.height ?? 0)
+    if (maxDim > 4000) {
+      imageBuffer = await sharp(imageBuffer)
+        .resize({ width: 4000, height: 4000, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 85 })
+        .toBuffer()
+      mediaType = 'image/jpeg'
+    } else {
+      const mt = mimeType.toLowerCase()
+      if (mt.includes('png')) mediaType = 'image/png'
+      else if (mt.includes('gif')) mediaType = 'image/gif'
+      else if (mt.includes('webp')) mediaType = 'image/webp'
+      else mediaType = 'image/jpeg'
+    }
   } catch {
-    return []
+    // Not a valid image — skip vision analysis
+    return { tags: [], extractedText: [], barcodes: [] }
+  }
+
+  const imageBase64 = imageBuffer.toString('base64')
+  const folderContext = folderPath ? `\nSharePoint folder path: ${folderPath}` : ''
+
+  const message = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: imageBase64 },
+          },
+          {
+            type: 'text',
+            text: `Analyze this image and return a JSON object with these fields:
+
+- "tags": array of 10-20 lowercase descriptive tags covering ALL of the following categories where applicable:
+  • SUBJECT: what the product/object/scene is (e.g. "soap", "candle", "essential oil", "tincture")
+  • BACKGROUND: background style (e.g. "white background", "lifestyle", "outdoor", "studio", "rustic wood", "natural setting", "flat lay", "on-model")
+  • COLORS: dominant colors (e.g. "green", "purple", "earth tones", "neutral")
+  • MOOD/AESTHETIC: visual feel (e.g. "minimalist", "cozy", "natural", "artisan", "luxury", "organic")
+  • COMPOSITION: shot type (e.g. "close-up", "macro", "overhead", "group shot", "single product", "hero shot")
+  • SOCIAL MEDIA USE: inferred use case (e.g. "instagram-ready", "product launch", "story format", "banner", "square crop friendly")
+  • BRAND CONTEXT: if identifiable as Nature's Storehouse grocery store or ADK Fragrance Farm, include that; also include "cbd", "hemp", "fragrance", "food", "grocery", etc. as relevant
+  • SEASON/OCCASION: if applicable (e.g. "holiday", "summer", "fall", "gift")
+
+- "extracted_text": array of all readable text in the image (product names, labels, ingredients, signs, prices — exact text as written)
+- "barcodes": array of any barcode or QR code values visible
+
+File name: "${fileName}"${folderContext}
+
+Return ONLY valid JSON, nothing else. Example: {"tags":["soap","cbd","white background","minimalist","close-up","hero shot","natural","green","instagram-ready","adk fragrance farm"],"extracted_text":["Healing Woods CBD Soap","4oz","$12.99"],"barcodes":[]}`,
+          },
+        ],
+      },
+    ],
+  })
+
+  const responseText = message.content[0].type === 'text' ? message.content[0].text : ''
+
+  try {
+    const parsed = JSON.parse(responseText.replace(/```json\n?|\n?```/g, '').trim())
+    const tags = Array.isArray(parsed.tags)
+      ? parsed.tags
+          .map((t: string) =>
+            t
+              .trim()
+              .toLowerCase()
+              .replace(/[^a-z0-9\s-]/g, ''),
+          )
+          .filter(Boolean)
+      : []
+    const extractedText = Array.isArray(parsed.extracted_text) ? parsed.extracted_text.filter(Boolean) : []
+    const barcodes = Array.isArray(parsed.barcodes) ? parsed.barcodes.filter(Boolean) : []
+    return { tags, extractedText, barcodes }
+  } catch {
+    // Fallback: treat as comma-separated tags
+    const tags = responseText
+      .split(',')
+      .map((t) =>
+        t
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9\s-]/g, ''),
+      )
+      .filter(Boolean)
+    return { tags, extractedText: [], barcodes: [] }
   }
 }
 
 export async function POST(request: NextRequest) {
   // Verify authenticated + admin
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
@@ -69,7 +134,12 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json()
-  const { sharePointUrl, business = 'both', enableAiTagging = true, dryRun = false } = body as {
+  const {
+    sharePointUrl,
+    business = 'both',
+    enableAiTagging = true,
+    dryRun = false,
+  } = body as {
     sharePointUrl: string
     business?: string
     enableAiTagging?: boolean
@@ -167,12 +237,22 @@ export async function POST(request: NextRequest) {
               .from('northvault-assets')
               .createSignedUrl(storagePath, 60 * 60 * 24 * 365)
 
-            // 6. AI tagging
+            // 6. AI tagging (vision-based for images)
             const contentType = getContentType(spFile.mimeType, spFile.name)
             let tags: string[] = []
-            if (enableAiTagging) {
+            let extractedText: string[] = []
+            let barcodes: string[] = []
+
+            if (enableAiTagging && contentType === 'image') {
               send('progress', { total: results.total, current: spFile.name, phase: 'tagging' })
-              tags = await requestAiTags(spFile.name, spFile.mimeType, contentType)
+              try {
+                const result = await analyzeImageWithClaude(buffer, spFile.mimeType, spFile.name, spFile.path)
+                tags = result.tags
+                extractedText = result.extractedText
+                barcodes = result.barcodes
+              } catch {
+                // AI tagging failure is non-fatal
+              }
             }
 
             // Add folder-based tags from SharePoint path
@@ -180,8 +260,8 @@ export async function POST(request: NextRequest) {
               const pathTags = spFile.path
                 .split('/')
                 .filter(Boolean)
-                .map(s => s.toLowerCase().replace(/\s+/g, '-'))
-                .filter(t => t.length > 1 && t.length < 50)
+                .map((s) => s.toLowerCase().replace(/\s+/g, '-'))
+                .filter((t) => t.length > 1 && t.length < 50)
               for (const pt of pathTags) {
                 if (!tags.includes(pt)) tags.push(pt)
               }
@@ -202,6 +282,8 @@ export async function POST(request: NextRequest) {
                 storage_url: urlData?.signedUrl ?? null,
                 business,
                 tags,
+                extracted_text: extractedText.length > 0 ? extractedText : null,
+                barcodes: barcodes.length > 0 ? barcodes : null,
                 uploaded_by: user.id,
                 original_created_at: spFile.lastModified,
               })
@@ -216,7 +298,6 @@ export async function POST(request: NextRequest) {
             results.uploaded++
             results.files.push({ name: spFile.name, status: 'uploaded', tags })
             send('file', { name: spFile.name, status: 'uploaded', tags })
-
           } catch (fileErr) {
             results.errors++
             const msg = (fileErr as Error).message
