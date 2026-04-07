@@ -4,7 +4,9 @@ import Anthropic from '@anthropic-ai/sdk'
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
 
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -30,10 +32,7 @@ export async function POST(request: NextRequest) {
 
   // Only support images for now
   if (asset.content_type !== 'image') {
-    return NextResponse.json(
-      { error: 'AI tagging is only supported for images at this time.' },
-      { status: 422 }
-    )
+    return NextResponse.json({ error: 'AI tagging is only supported for images at this time.' }, { status: 422 })
   }
 
   // Get a signed URL for the asset
@@ -93,7 +92,12 @@ export async function POST(request: NextRequest) {
             },
             {
               type: 'text',
-              text: 'Analyze this image and return 5-8 relevant tags in lowercase, comma-separated. Tags should describe: content/subject matter, colors, mood, business context (if identifiable as nature\'s storehouse grocery store or ADK fragrance farm). Return ONLY the comma-separated tags, nothing else.',
+              text: `Analyze this image and return a JSON object with these fields:
+- "tags": array of 5-10 lowercase descriptive tags (subject matter, colors, mood, business context — if identifiable as Nature's Storehouse grocery store or ADK Fragrance Farm, include that)
+- "extracted_text": array of all readable text found in the image (labels, signs, product names, descriptions, ingredients — exact text as written)
+- "barcodes": array of any barcode or QR code numbers/values visible in the image
+
+Return ONLY valid JSON, nothing else. Example: {"tags":["soap","natural","green"],"extracted_text":["Healing Woods CBD Soap","4oz"],"barcodes":["012345678901"]}`,
             },
           ],
         },
@@ -101,12 +105,51 @@ export async function POST(request: NextRequest) {
     })
 
     const responseText = message.content[0].type === 'text' ? message.content[0].text : ''
-    const tags = responseText
-      .split(',')
-      .map((t) => t.trim().toLowerCase().replace(/[^a-z0-9\s-]/g, ''))
-      .filter(Boolean)
 
-    return NextResponse.json({ tags })
+    let tags: string[] = []
+    let extractedText: string[] = []
+    let barcodes: string[] = []
+
+    try {
+      const parsed = JSON.parse(responseText.replace(/```json\n?|\n?```/g, '').trim())
+      tags = Array.isArray(parsed.tags)
+        ? parsed.tags
+            .map((t: string) =>
+              t
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9\s-]/g, ''),
+            )
+            .filter(Boolean)
+        : []
+      extractedText = Array.isArray(parsed.extracted_text) ? parsed.extracted_text.filter(Boolean) : []
+      barcodes = Array.isArray(parsed.barcodes) ? parsed.barcodes.filter(Boolean) : []
+    } catch {
+      // Fallback: treat entire response as comma-separated tags
+      tags = responseText
+        .split(',')
+        .map((t) =>
+          t
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9\s-]/g, ''),
+        )
+        .filter(Boolean)
+    }
+
+    // Store extracted text and barcodes in the asset record
+    if (extractedText.length > 0 || barcodes.length > 0) {
+      await supabase
+        .schema('northvault')
+        .from('assets')
+        .update({
+          ...(extractedText.length > 0 && { extracted_text: extractedText }),
+          ...(barcodes.length > 0 && { barcodes }),
+        })
+        .eq('id', assetId)
+    }
+
+    return NextResponse.json({ tags, extractedText, barcodes })
   } catch (err) {
     console.error('Claude API error:', err)
     return NextResponse.json({ error: 'AI analysis failed. Please try again.' }, { status: 500 })

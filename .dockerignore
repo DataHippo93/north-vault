@@ -1,0 +1,16 @@
+.git
+.github
+.next
+.husky
+node_modules
+*.log
+*.md
+.env*
+!.env.example
+e2e
+test-results
+playwright-report
+coverage
+.DS_Store
+Dockerfile*
+docker-compose*

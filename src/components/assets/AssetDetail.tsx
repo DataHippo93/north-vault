@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import Image from 'next/image'
 import { createClient } from '@/lib/supabase/client'
 import type { Asset } from '@/types'
 import { formatFileSize } from '@/lib/utils/fileType'
@@ -16,7 +17,16 @@ interface Props {
   userRole: string
 }
 
-export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, onUpdateNotes, onUpdateBusiness, onRename, userRole }: Props) {
+export default function AssetDetail({
+  asset,
+  onClose,
+  onDelete,
+  onUpdateTags,
+  onUpdateNotes,
+  onUpdateBusiness,
+  onRename,
+  userRole,
+}: Props) {
   const supabase = createClient()
   const [signedUrl, setSignedUrl] = useState<string | null>(null)
   const [tagInput, setTagInput] = useState('')
@@ -90,13 +100,19 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
 
   function addTag() {
     const t = tagInput.trim().toLowerCase()
-    if (!t || (asset.tags ?? []).includes(t)) { setTagInput(''); return }
+    if (!t || (asset.tags ?? []).includes(t)) {
+      setTagInput('')
+      return
+    }
     onUpdateTags(asset, [...(asset.tags ?? []), t])
     setTagInput('')
   }
 
   function removeTag(tag: string) {
-    onUpdateTags(asset, (asset.tags ?? []).filter(t => t !== tag))
+    onUpdateTags(
+      asset,
+      (asset.tags ?? []).filter((t) => t !== tag),
+    )
   }
 
   async function handleGetAiTags() {
@@ -130,23 +146,27 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
   return (
     <div className="fixed inset-0 z-50 flex">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-sage-950/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="bg-sage-950/60 absolute inset-0 backdrop-blur-sm" onClick={onClose} />
 
       {/* Panel */}
-      <div className="relative ml-auto w-full max-w-md h-full bg-white shadow-2xl flex flex-col overflow-hidden">
+      <div className="relative ml-auto flex h-full w-full max-w-md flex-col overflow-hidden bg-white shadow-2xl">
         {/* Toast */}
         {toast && (
-          <div className={`absolute top-4 left-4 right-4 z-10 px-4 py-3 rounded-lg text-sm font-medium shadow-lg transition-all ${
-            toast.type === 'success' ? 'bg-green-100 text-green-800 border border-green-200' : 'bg-red-100 text-red-800 border border-red-200'
-          }`}>
+          <div
+            className={`absolute top-4 right-4 left-4 z-10 rounded-lg px-4 py-3 text-sm font-medium shadow-lg transition-all ${
+              toast.type === 'success'
+                ? 'border border-green-200 bg-green-100 text-green-800'
+                : 'border border-red-200 bg-red-100 text-red-800'
+            }`}
+          >
             {toast.message}
           </div>
         )}
 
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
           {editingName ? (
-            <div className="flex items-center gap-2 flex-1 pr-2">
+            <div className="flex flex-1 items-center gap-2 pr-2">
               <input
                 autoFocus
                 type="text"
@@ -154,70 +174,84 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
                 onChange={(e) => setNameInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') handleRename()
-                  if (e.key === 'Escape') { setEditingName(false); setNameInput(asset.file_name) }
+                  if (e.key === 'Escape') {
+                    setEditingName(false)
+                    setNameInput(asset.file_name)
+                  }
                 }}
-                className="flex-1 px-2 py-1 border border-slate-300 rounded text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                className="flex-1 rounded border border-slate-300 px-2 py-1 text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-slate-900 focus:outline-none"
               />
               <button
                 onClick={handleRename}
                 disabled={renaming}
-                className="text-xs px-2 py-1 bg-slate-900 text-white rounded hover:bg-slate-800 disabled:opacity-50"
+                className="rounded bg-slate-900 px-2 py-1 text-xs text-white hover:bg-slate-800 disabled:opacity-50"
               >
                 {renaming ? '...' : 'Save'}
               </button>
               <button
-                onClick={() => { setEditingName(false); setNameInput(asset.file_name) }}
-                className="text-xs px-2 py-1 border border-slate-300 rounded hover:bg-slate-100"
+                onClick={() => {
+                  setEditingName(false)
+                  setNameInput(asset.file_name)
+                }}
+                className="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
               >
                 Cancel
               </button>
             </div>
           ) : (
-            <div className="flex items-center gap-2 flex-1 pr-2 min-w-0">
-              <h2 className="text-base font-semibold text-slate-900 truncate">{asset.file_name}</h2>
+            <div className="flex min-w-0 flex-1 items-center gap-2 pr-2">
+              <h2 className="truncate text-base font-semibold text-slate-900">{asset.file_name}</h2>
               <button
                 onClick={() => setEditingName(true)}
                 title="Rename"
-                className="text-slate-400 hover:text-slate-600 flex-shrink-0"
+                className="flex-shrink-0 text-slate-400 hover:text-slate-600"
               >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
+                  />
                 </svg>
               </button>
             </div>
           )}
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 flex-shrink-0">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <button onClick={onClose} className="flex-shrink-0 text-slate-400 hover:text-slate-600">
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        <div className="flex-1 space-y-6 overflow-y-auto p-6">
           {/* Preview */}
-          <div className="bg-sage-50 rounded-xl overflow-hidden flex items-center justify-center" style={{minHeight: 200}}>
+          <div
+            className="bg-sage-50 relative flex items-center justify-center overflow-hidden rounded-xl"
+            style={{ minHeight: 200 }}
+          >
             {asset.content_type === 'image' && signedUrl ? (
-              <img src={signedUrl} alt={asset.file_name} className="max-w-full max-h-64 object-contain" />
+              <Image src={signedUrl} alt={asset.file_name} fill className="object-contain" sizes="448px" unoptimized />
             ) : asset.content_type === 'video' && signedUrl ? (
-              <video src={signedUrl} controls className="max-w-full max-h-64" />
+              <video src={signedUrl} controls className="max-h-64 max-w-full" />
             ) : asset.content_type === 'pdf' && signedUrl ? (
-              <iframe src={signedUrl} className="w-full h-64" title={asset.file_name} />
+              <iframe src={signedUrl} className="h-64 w-full" title={asset.file_name} />
             ) : (
-              <div className="text-center py-12">
-                <div className="w-16 h-16 mx-auto rounded-2xl bg-sage-100 flex items-center justify-center mb-3">
-                  <span className="text-sm font-bold text-sage-500">
+              <div className="py-12 text-center">
+                <div className="bg-sage-100 mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-2xl">
+                  <span className="text-sage-500 text-sm font-bold">
                     {asset.content_type === 'document' ? 'DOC' : asset.content_type === 'adobe' ? 'AI' : 'FILE'}
                   </span>
                 </div>
-                <p className="text-sm text-sage-500">{asset.mime_type}</p>
+                <p className="text-sage-500 text-sm">{asset.mime_type}</p>
               </div>
             )}
           </div>
 
           {/* Metadata */}
           <div className="space-y-2">
-            <h3 className="text-xs font-semibold text-sage-500 uppercase tracking-wider">Details</h3>
+            <h3 className="text-sage-500 text-xs font-semibold tracking-wider uppercase">Details</h3>
             <dl className="space-y-2">
               <Row label="Original name" value={asset.original_filename} />
               <Row label="Size" value={formatFileSize(asset.file_size)} />
@@ -232,11 +266,11 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
 
           {/* Business */}
           <div className="space-y-2">
-            <h3 className="text-xs font-semibold text-sage-500 uppercase tracking-wider">Business</h3>
+            <h3 className="text-sage-500 text-xs font-semibold tracking-wider uppercase">Business</h3>
             <select
               value={asset.business}
               onChange={(e) => onUpdateBusiness(asset, e.target.value)}
-              className="w-full px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500 bg-white"
+              className="border-sage-300 focus:ring-vault-500 w-full rounded-lg border bg-white px-3 py-2 text-sm focus:ring-2 focus:outline-none"
             >
               <option value="both">Both</option>
               <option value="natures">{"Nature's Storehouse"}</option>
@@ -247,19 +281,24 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
           {/* Tags */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-sage-500 uppercase tracking-wider">Tags</h3>
+              <h3 className="text-sage-500 text-xs font-semibold tracking-wider uppercase">Tags</h3>
               {asset.content_type === 'image' && (
                 <button
                   onClick={handleGetAiTags}
                   disabled={aiTagging}
-                  className="flex items-center gap-1 text-xs text-vault-600 hover:text-vault-800 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="text-vault-600 hover:text-vault-800 flex items-center gap-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {aiTagging ? (
                     <span>Analyzing...</span>
                   ) : (
                     <>
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M13 10V3L4 14h7v7l9-11h-7z"
+                        />
                       </svg>
                       AI Tags
                     </>
@@ -268,12 +307,15 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
               )}
             </div>
             {aiTagError && <p className="text-xs text-red-500">{aiTagError}</p>}
-            <div className="flex flex-wrap gap-2 mb-2">
-              {(asset.tags ?? []).map(tag => (
-                <span key={tag} className="flex items-center gap-1 px-2 py-1 bg-sage-100 text-sage-700 rounded-md text-sm">
+            <div className="mb-2 flex flex-wrap gap-2">
+              {(asset.tags ?? []).map((tag) => (
+                <span
+                  key={tag}
+                  className="bg-sage-100 text-sage-700 flex items-center gap-1 rounded-md px-2 py-1 text-sm"
+                >
                   {tag}
                   <button onClick={() => removeTag(tag)} className="text-sage-400 hover:text-sage-700">
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                   </button>
@@ -287,9 +329,12 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
                 onChange={(e) => setTagInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && addTag()}
                 placeholder="Add tag..."
-                className="flex-1 px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500"
+                className="border-sage-300 focus:ring-vault-500 flex-1 rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:outline-none"
               />
-              <button onClick={addTag} className="px-3 py-2 bg-vault-600 text-white rounded-lg text-sm hover:bg-vault-700 transition-colors">
+              <button
+                onClick={addTag}
+                className="bg-vault-600 hover:bg-vault-700 rounded-lg px-3 py-2 text-sm text-white transition-colors"
+              >
                 Add
               </button>
             </div>
@@ -297,18 +342,24 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
 
           {/* Notes */}
           <div className="space-y-2">
-            <h3 className="text-xs font-semibold text-sage-500 uppercase tracking-wider">Notes</h3>
+            <h3 className="text-sage-500 text-xs font-semibold tracking-wider uppercase">Notes</h3>
             <textarea
               value={notes}
-              onChange={(e) => { setNotes(e.target.value); setNotesChanged(true) }}
+              onChange={(e) => {
+                setNotes(e.target.value)
+                setNotesChanged(true)
+              }}
               placeholder="Add notes about this asset..."
               rows={3}
-              className="w-full px-3 py-2 border border-sage-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-vault-500 resize-none"
+              className="border-sage-300 focus:ring-vault-500 w-full resize-none rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:outline-none"
             />
             {notesChanged && (
               <button
-                onClick={() => { onUpdateNotes(asset, notes); setNotesChanged(false) }}
-                className="text-sm text-vault-600 hover:text-vault-800 font-medium"
+                onClick={() => {
+                  onUpdateNotes(asset, notes)
+                  setNotesChanged(false)
+                }}
+                className="text-vault-600 hover:text-vault-800 text-sm font-medium"
               >
                 Save notes
               </button>
@@ -317,17 +368,17 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
         </div>
 
         {/* Footer actions */}
-        <div className="px-6 py-4 border-t border-sage-200 bg-wood-50 flex gap-3">
+        <div className="border-sage-200 bg-wood-50 flex gap-3 border-t px-6 py-4">
           <button
             onClick={handleDownload}
-            className="flex-1 bg-vault-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-vault-700 transition-colors shadow-sm"
+            className="bg-vault-600 hover:bg-vault-700 flex-1 rounded-lg py-2 text-sm font-medium text-white shadow-sm transition-colors"
           >
             Download
           </button>
           {userRole === 'admin' && (
             <button
               onClick={() => onDelete(asset)}
-              className="px-4 py-2 border border-red-200 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 transition-colors"
+              className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
             >
               Delete
             </button>
@@ -341,8 +392,8 @@ export default function AssetDetail({ asset, onClose, onDelete, onUpdateTags, on
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-2">
-      <dt className="text-xs text-sage-500 w-28 flex-shrink-0 pt-0.5">{label}</dt>
-      <dd className="text-sm text-sage-900 break-all">{value}</dd>
+      <dt className="text-sage-500 w-28 flex-shrink-0 pt-0.5 text-xs">{label}</dt>
+      <dd className="text-sage-900 text-sm break-all">{value}</dd>
     </div>
   )
 }

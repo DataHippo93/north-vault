@@ -19,6 +19,8 @@ export interface Asset {
   tags: string[] | null
   notes: string | null
   thumbnail_path: string | null
+  extracted_text: string[] | null
+  barcodes: string[] | null
 }
 
 export interface UploadFile {

@@ -4,7 +4,7 @@ import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { createClient } from '@/lib/supabase/client'
 import { computeSHA256, checkDuplicate } from '@/lib/utils/fileHash'
-import { getContentType } from '@/lib/utils/fileType'
+import { formatFileSize, getContentType } from '@/lib/utils/fileType'
 import type { UploadFile, BusinessEntity } from '@/types'
 
 interface Props {
@@ -19,13 +19,27 @@ export default function UploadClient({ userId }: Props) {
   const [uploading, setUploading] = useState(false)
   const [aiTagging, setAiTagging] = useState(true)
 
+  // SharePoint import state
+  const [spTab, setSpTab] = useState<'upload' | 'sharepoint'>('upload')
+  const [sharePointFolderUrl, setSharePointFolderUrl] = useState('')
+  const [sharePointItemsJson, setSharePointItemsJson] = useState('')
+  const [bulkImportStatus, setBulkImportStatus] = useState<string | null>(null)
+  const [bulkImporting, setBulkImporting] = useState(false)
+  const [spBrowseFiles, setSpBrowseFiles] = useState<
+    Array<{ name: string; size: number; mimeType: string; downloadUrl: string; webUrl: string; isFolder: boolean }>
+  >([])
+  const [spBrowseLoading, setSpBrowseLoading] = useState(false)
+  const [spBrowseError, setSpBrowseError] = useState<string | null>(null)
+  const [spSelectedFiles, setSpSelectedFiles] = useState<Set<number>>(new Set())
+  const [spMode, setSpMode] = useState<'browse' | 'json'>('browse')
+
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    const newFiles: UploadFile[] = acceptedFiles.map(file => ({
+    const newFiles: UploadFile[] = acceptedFiles.map((file) => ({
       file,
       status: 'pending',
       progress: 0,
     }))
-    setFiles(prev => [...prev, ...newFiles])
+    setFiles((prev) => [...prev, ...newFiles])
   }, [])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -34,7 +48,7 @@ export default function UploadClient({ userId }: Props) {
   })
 
   function updateFile(index: number, updates: Partial<UploadFile>) {
-    setFiles(prev => prev.map((f, i) => i === index ? { ...f, ...updates } : f))
+    setFiles((prev) => prev.map((f, i) => (i === index ? { ...f, ...updates } : f)))
   }
 
   async function requestAiTags(file: File, contentType: string): Promise<string[]> {
@@ -69,7 +83,10 @@ export default function UploadClient({ userId }: Props) {
 
   async function uploadFile(uploadFile: UploadFile, index: number) {
     const { file } = uploadFile
-    const manualTags = tags.split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
+    const manualTags = tags
+      .split(',')
+      .map((t) => t.trim().toLowerCase())
+      .filter(Boolean)
 
     // 1. Hash the file
     updateFile(index, { status: 'hashing', progress: 5 })
@@ -94,12 +111,10 @@ export default function UploadClient({ userId }: Props) {
     const ext = file.name.split('.').pop() || ''
     const storagePath = `${userId}/${Date.now()}-${hash.slice(0, 8)}.${ext}`
 
-    const { error: storageError } = await supabase.storage
-      .from('northvault-assets')
-      .upload(storagePath, file, {
-        contentType: file.type,
-        upsert: false,
-      })
+    const { error: storageError } = await supabase.storage.from('northvault-assets').upload(storagePath, file, {
+      contentType: file.type,
+      upsert: false,
+    })
 
     if (storageError) {
       updateFile(index, { status: 'error', error: storageError.message })
@@ -115,6 +130,7 @@ export default function UploadClient({ userId }: Props) {
 
     // 5. AI auto-tagging (parallel with DB insert prep)
     const contentType = getContentType(file.type, file.name)
+    // eslint-disable-next-line prefer-const
     let allTags = [...manualTags]
 
     if (aiTagging) {
@@ -156,6 +172,96 @@ export default function UploadClient({ userId }: Props) {
     updateFile(index, { status: 'done', progress: 100, assetId: asset.id })
   }
 
+  async function handleBulkImportFromSharePoint() {
+    if (!sharePointItemsJson.trim()) {
+      setBulkImportStatus('Paste a JSON array of SharePoint items first.')
+      return
+    }
+    setBulkImporting(true)
+    setBulkImportStatus('Starting import...')
+    try {
+      const items = JSON.parse(sharePointItemsJson)
+      const res = await fetch('/api/assets/import-sharepoint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderUrl: sharePointFolderUrl || undefined, items, autoTag: true }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'SharePoint import failed')
+      const counts = data.results.reduce(
+        (acc: { done: number; duplicate: number; error: number }, item: { status: string }) => {
+          acc[item.status as keyof typeof acc] = (acc[item.status as keyof typeof acc] || 0) + 1
+          return acc
+        },
+        { done: 0, duplicate: 0, error: 0 },
+      )
+      setBulkImportStatus(`Imported ${counts.done}, skipped ${counts.duplicate} duplicates, ${counts.error} errors.`)
+      setSharePointItemsJson('')
+    } catch (err) {
+      setBulkImportStatus(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setBulkImporting(false)
+    }
+  }
+
+  async function handleSharePointBrowse() {
+    if (!sharePointFolderUrl.trim()) {
+      setSpBrowseError('Enter a SharePoint folder URL first.')
+      return
+    }
+    setSpBrowseLoading(true)
+    setSpBrowseError(null)
+    setSpBrowseFiles([])
+    setSpSelectedFiles(new Set())
+    try {
+      const res = await fetch('/api/sharepoint/browse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderUrl: sharePointFolderUrl }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Browse failed')
+      setSpBrowseFiles(data.files || [])
+    } catch (err) {
+      setSpBrowseError(err instanceof Error ? err.message : 'Browse failed')
+    } finally {
+      setSpBrowseLoading(false)
+    }
+  }
+
+  async function handleImportSelectedSharePointFiles() {
+    const filesToImport = spBrowseFiles.filter((_, i) => spSelectedFiles.has(i)).filter((f) => !f.isFolder)
+    if (!filesToImport.length) {
+      setBulkImportStatus('Select at least one file to import.')
+      return
+    }
+    setBulkImporting(true)
+    setBulkImportStatus('Starting import...')
+    try {
+      const items = filesToImport.map((f) => ({ name: f.name, url: f.downloadUrl, size: f.size, mimeType: f.mimeType }))
+      const res = await fetch('/api/assets/import-sharepoint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderUrl: sharePointFolderUrl || undefined, items, autoTag: true }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Import failed')
+      const counts = data.results.reduce(
+        (acc: { done: number; duplicate: number; error: number }, item: { status: string }) => {
+          acc[item.status as keyof typeof acc] = (acc[item.status as keyof typeof acc] || 0) + 1
+          return acc
+        },
+        { done: 0, duplicate: 0, error: 0 },
+      )
+      setBulkImportStatus(`Imported ${counts.done}, skipped ${counts.duplicate} duplicates, ${counts.error} errors.`)
+      setSpSelectedFiles(new Set())
+    } catch (err) {
+      setBulkImportStatus(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setBulkImporting(false)
+    }
+  }
+
   async function handleUploadAll() {
     setUploading(true)
     const pending = files.map((f, i) => ({ f, i })).filter(({ f }) => f.status === 'pending')
@@ -167,152 +273,312 @@ export default function UploadClient({ userId }: Props) {
   }
 
   function removeFile(index: number) {
-    setFiles(prev => prev.filter((_, i) => i !== index))
+    setFiles((prev) => prev.filter((_, i) => i !== index))
   }
 
-  const pendingCount = files.filter(f => f.status === 'pending').length
-  const doneCount = files.filter(f => f.status === 'done').length
-  const errorCount = files.filter(f => f.status === 'error').length
+  const pendingCount = files.filter((f) => f.status === 'pending').length
+  const doneCount = files.filter((f) => f.status === 'done').length
+  const errorCount = files.filter((f) => f.status === 'error').length
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      <h1 className="text-2xl font-bold text-stone-800">Upload Assets</h1>
-
-      {/* Settings */}
-      <div className="bg-white rounded-xl border border-stone-200 p-6 space-y-4 shadow-sm">
-        <h2 className="text-base font-semibold text-stone-800">Upload settings</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-stone-600 mb-1">Business</label>
-            <select
-              value={business}
-              onChange={(e) => setBusiness(e.target.value as BusinessEntity)}
-              className="w-full px-3 py-2 border border-stone-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sage-600 bg-white"
-            >
-              <option value="both">Both</option>
-              <option value="natures">{"Nature's Storehouse"}</option>
-              <option value="adk">ADK Fragrance</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-stone-600 mb-1">Tags (comma-separated)</label>
-            <input
-              type="text"
-              value={tags}
-              onChange={(e) => setTags(e.target.value)}
-              placeholder="e.g. product, 2024, hero"
-              className="w-full px-3 py-2 border border-stone-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sage-600"
-            />
-          </div>
-        </div>
-        <div className="flex items-center gap-3 pt-1">
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={aiTagging}
-              onChange={(e) => setAiTagging(e.target.checked)}
-              className="sr-only peer"
-            />
-            <div className="w-9 h-5 bg-stone-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-sage-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#6b7f5e]"></div>
-          </label>
-          <span className="text-sm text-stone-600">AI auto-tagging</span>
+    <div className="mx-auto max-w-3xl space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-stone-800">Upload Assets</h1>
+        <div className="flex overflow-hidden rounded-lg border border-stone-300 text-sm">
+          <button
+            onClick={() => setSpTab('upload')}
+            className={`px-4 py-2 font-medium transition-colors ${spTab === 'upload' ? 'bg-stone-900 text-white' : 'text-stone-600 hover:bg-stone-100'}`}
+          >
+            Upload Files
+          </button>
+          <button
+            onClick={() => setSpTab('sharepoint')}
+            className={`px-4 py-2 font-medium transition-colors ${spTab === 'sharepoint' ? 'bg-stone-900 text-white' : 'text-stone-600 hover:bg-stone-100'}`}
+          >
+            SharePoint Import
+          </button>
         </div>
       </div>
 
-      {/* Dropzone */}
-      <div
-        {...getRootProps()}
-        className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-colors ${
-          isDragActive ? 'border-[#6b7f5e] bg-[#f4f7f1]' : 'border-stone-300 hover:border-stone-400'
-        }`}
-      >
-        <input {...getInputProps()} />
-        <svg className="w-12 h-12 mx-auto mb-4 text-stone-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-        </svg>
-        <p className="text-stone-600 font-medium mb-1">
-          {isDragActive ? 'Drop files here' : 'Drag and drop files here'}
-        </p>
-        <p className="text-sm text-stone-400">or click to browse — any file type supported</p>
-      </div>
-
-      {/* File list */}
-      {files.length > 0 && (
-        <div className="bg-white rounded-xl border border-stone-200 overflow-hidden shadow-sm">
-          <div className="px-6 py-4 border-b border-stone-200 flex items-center justify-between">
-            <div className="text-sm text-stone-600">
-              {files.length} file{files.length !== 1 ? 's' : ''}
-              {doneCount > 0 && <span className="text-[#6b7f5e] ml-2">· {doneCount} done</span>}
-              {errorCount > 0 && <span className="text-red-600 ml-2">· {errorCount} failed</span>}
+      {spTab === 'sharepoint' ? (
+        <div className="space-y-4 rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-stone-800">Bulk import from SharePoint</h2>
+              <p className="text-sm text-stone-500">
+                Browse a SharePoint folder or paste a pre-enumerated item list. Dedup runs first, then AI tagging.
+              </p>
             </div>
-            <div className="flex gap-3">
+            <div className="flex overflow-hidden rounded-lg border border-stone-300 text-xs">
               <button
-                onClick={() => setFiles([])}
-                className="text-sm text-stone-500 hover:text-stone-700"
+                onClick={() => setSpMode('browse')}
+                className={`px-3 py-1.5 font-medium transition-colors ${spMode === 'browse' ? 'bg-stone-900 text-white' : 'text-stone-600 hover:bg-stone-100'}`}
               >
-                Clear all
+                Browse
               </button>
-              {pendingCount > 0 && (
-                <button
-                  onClick={handleUploadAll}
-                  disabled={uploading}
-                  className="text-sm bg-[#4a5a3f] text-white px-4 py-2 rounded-lg hover:bg-[#3d4b34] disabled:opacity-50 transition-colors"
-                >
-                  {uploading ? 'Uploading...' : `Upload ${pendingCount} file${pendingCount !== 1 ? 's' : ''}`}
-                </button>
-              )}
+              <button
+                onClick={() => setSpMode('json')}
+                className={`px-3 py-1.5 font-medium transition-colors ${spMode === 'json' ? 'bg-stone-900 text-white' : 'text-stone-600 hover:bg-stone-100'}`}
+              >
+                Paste JSON
+              </button>
             </div>
           </div>
 
-          <ul className="divide-y divide-stone-100">
-            {files.map((f, i) => (
-              <li key={i} className="px-6 py-4 flex items-center gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm font-medium text-stone-800 truncate">{f.file.name}</span>
-                    <StatusBadge status={f.status} />
+          <input
+            type="text"
+            value={sharePointFolderUrl}
+            onChange={(e) => setSharePointFolderUrl(e.target.value)}
+            placeholder="SharePoint folder URL, e.g. https://tenant.sharepoint.com/sites/MySite/Shared Documents/Photos"
+            className="focus:ring-sage-600 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:ring-2 focus:outline-none"
+          />
+
+          {spMode === 'browse' ? (
+            <>
+              <button
+                onClick={handleSharePointBrowse}
+                disabled={spBrowseLoading}
+                className="rounded-lg bg-stone-900 px-4 py-2 text-sm font-medium text-white hover:bg-stone-800 disabled:opacity-50"
+              >
+                {spBrowseLoading ? 'Loading...' : 'Browse Folder'}
+              </button>
+
+              {spBrowseError && <p className="text-sm text-red-600">{spBrowseError}</p>}
+
+              {spBrowseFiles.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3 text-sm text-stone-600">
+                    <span>{spBrowseFiles.length} items found</span>
+                    <button
+                      onClick={() => {
+                        const allFileIndexes = spBrowseFiles.map((f, i) => (!f.isFolder ? i : -1)).filter((i) => i >= 0)
+                        setSpSelectedFiles(new Set(allFileIndexes))
+                      }}
+                      className="text-[#4a5a3f] underline hover:text-[#3d4b34]"
+                    >
+                      Select all files
+                    </button>
+                    {spSelectedFiles.size > 0 && (
+                      <button
+                        onClick={() => setSpSelectedFiles(new Set())}
+                        className="text-stone-500 underline hover:text-stone-700"
+                      >
+                        Clear
+                      </button>
+                    )}
                   </div>
-                  {(f.status === 'uploading' || f.status === 'tagging') && (
-                    <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-[#6b7f5e] rounded-full transition-all"
-                        style={{ width: `${f.progress}%` }}
-                      />
-                    </div>
+                  <div className="max-h-64 divide-y divide-stone-100 overflow-y-auto rounded-lg border border-stone-200">
+                    {spBrowseFiles.map((file, idx) => (
+                      <label
+                        key={idx}
+                        className={`flex cursor-pointer items-center gap-3 px-3 py-2 text-sm hover:bg-stone-50 ${file.isFolder ? 'opacity-60' : ''}`}
+                      >
+                        <input
+                          type="checkbox"
+                          disabled={file.isFolder}
+                          checked={spSelectedFiles.has(idx)}
+                          onChange={() => {
+                            setSpSelectedFiles((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(idx)) next.delete(idx)
+                              else next.add(idx)
+                              return next
+                            })
+                          }}
+                          className="rounded border-stone-300 text-[#6b7f5e] focus:ring-[#6b7f5e]"
+                        />
+                        <span className="flex-1 truncate text-stone-900">
+                          {file.isFolder ? '📁 ' : ''}
+                          {file.name}
+                        </span>
+                        <span className="text-xs whitespace-nowrap text-stone-400">
+                          {file.isFolder ? `${file.size} items` : formatFileSize(file.size)}
+                        </span>
+                        <span className="max-w-[140px] truncate text-xs text-stone-400">{file.mimeType}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleImportSelectedSharePointFiles}
+                      disabled={bulkImporting || spSelectedFiles.size === 0}
+                      className="rounded-lg bg-[#4a5a3f] px-4 py-2 text-sm font-medium text-white hover:bg-[#3d4b34] disabled:opacity-50"
+                    >
+                      {bulkImporting ? 'Importing...' : `Import ${spSelectedFiles.size} selected`}
+                    </button>
+                    {bulkImportStatus && <span className="text-sm text-stone-600">{bulkImportStatus}</span>}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <textarea
+                value={sharePointItemsJson}
+                onChange={(e) => setSharePointItemsJson(e.target.value)}
+                placeholder='Paste JSON array of items, e.g. [{"name":"photo.jpg","url":"https://...","mimeType":"image/jpeg","size":12345}]'
+                className="focus:ring-sage-600 min-h-32 w-full rounded-lg border border-stone-300 px-3 py-2 font-mono text-sm focus:ring-2 focus:outline-none"
+              />
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleBulkImportFromSharePoint}
+                  disabled={bulkImporting}
+                  className="rounded-lg bg-[#4a5a3f] px-4 py-2 text-sm font-medium text-white hover:bg-[#3d4b34] disabled:opacity-50"
+                >
+                  {bulkImporting ? 'Importing...' : 'Import from JSON'}
+                </button>
+                {bulkImportStatus && <span className="text-sm text-stone-600">{bulkImportStatus}</span>}
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Settings */}
+          <div className="space-y-4 rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
+            <h2 className="text-base font-semibold text-stone-800">Upload settings</h2>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-stone-600">Business</label>
+                <select
+                  value={business}
+                  onChange={(e) => setBusiness(e.target.value as BusinessEntity)}
+                  className="focus:ring-sage-600 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm focus:ring-2 focus:outline-none"
+                >
+                  <option value="both">Both</option>
+                  <option value="natures">{"Nature's Storehouse"}</option>
+                  <option value="adk">ADK Fragrance</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-stone-600">Tags (comma-separated)</label>
+                <input
+                  type="text"
+                  value={tags}
+                  onChange={(e) => setTags(e.target.value)}
+                  placeholder="e.g. product, 2024, hero"
+                  className="focus:ring-sage-600 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:ring-2 focus:outline-none"
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-3 pt-1">
+              <label className="relative inline-flex cursor-pointer items-center">
+                <input
+                  type="checkbox"
+                  checked={aiTagging}
+                  onChange={(e) => setAiTagging(e.target.checked)}
+                  className="peer sr-only"
+                />
+                <div className="peer-focus:ring-sage-600 peer h-5 w-9 rounded-full bg-stone-300 peer-checked:bg-[#6b7f5e] peer-focus:ring-2 peer-focus:outline-none after:absolute after:top-[2px] after:left-[2px] after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white" />
+              </label>
+              <span className="text-sm text-stone-600">AI auto-tagging</span>
+            </div>
+          </div>
+
+          {/* Dropzone */}
+          <div
+            {...getRootProps()}
+            className={`cursor-pointer rounded-xl border-2 border-dashed p-12 text-center transition-colors ${
+              isDragActive ? 'border-[#6b7f5e] bg-[#f4f7f1]' : 'border-stone-300 hover:border-stone-400'
+            }`}
+          >
+            <input {...getInputProps()} />
+            <svg
+              className="mx-auto mb-4 h-12 w-12 text-stone-300"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.5}
+                d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+              />
+            </svg>
+            <p className="mb-1 font-medium text-stone-600">
+              {isDragActive ? 'Drop files here' : 'Drag and drop files here'}
+            </p>
+            <p className="text-sm text-stone-400">or click to browse — any file type supported</p>
+          </div>
+
+          {/* File list */}
+          {files.length > 0 && (
+            <div className="overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between border-b border-stone-200 px-6 py-4">
+                <div className="text-sm text-stone-600">
+                  {files.length} file{files.length !== 1 ? 's' : ''}
+                  {doneCount > 0 && <span className="ml-2 text-[#6b7f5e]">· {doneCount} done</span>}
+                  {errorCount > 0 && <span className="ml-2 text-red-600">· {errorCount} failed</span>}
+                </div>
+                <div className="flex gap-3">
+                  <button onClick={() => setFiles([])} className="text-sm text-stone-500 hover:text-stone-700">
+                    Clear all
+                  </button>
+                  {pendingCount > 0 && (
+                    <button
+                      onClick={handleUploadAll}
+                      disabled={uploading}
+                      className="rounded-lg bg-[#4a5a3f] px-4 py-2 text-sm text-white transition-colors hover:bg-[#3d4b34] disabled:opacity-50"
+                    >
+                      {uploading ? 'Uploading...' : `Upload ${pendingCount} file${pendingCount !== 1 ? 's' : ''}`}
+                    </button>
                   )}
-                  {f.status === 'duplicate' && f.duplicateOf && (
-                    <p className="text-xs text-wood-600">Duplicate of: {f.duplicateOf.file_name}</p>
-                  )}
-                  {f.status === 'error' && f.error && (
-                    <p className="text-xs text-red-600">{f.error}</p>
-                  )}
-                  {f.status === 'done' && (
-                    <div>
-                      <p className="text-xs text-[#6b7f5e]">Uploaded successfully</p>
-                      {f.aiTags && f.aiTags.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          <span className="text-xs text-stone-400">AI tags:</span>
-                          {f.aiTags.map(tag => (
-                            <span key={tag} className="px-1.5 py-0.5 bg-[#f0f4ec] text-[#4a5a3f] rounded text-xs">
-                              {tag}
-                            </span>
-                          ))}
+                </div>
+              </div>
+
+              <ul className="divide-y divide-stone-100">
+                {files.map((f, i) => (
+                  <li key={i} className="flex items-center gap-4 px-6 py-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-1 flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-stone-800">{f.file.name}</span>
+                        <StatusBadge status={f.status} />
+                      </div>
+                      {(f.status === 'uploading' || f.status === 'tagging') && (
+                        <div className="h-1.5 overflow-hidden rounded-full bg-stone-100">
+                          <div
+                            className="h-full rounded-full bg-[#6b7f5e] transition-all"
+                            style={{ width: `${f.progress}%` }}
+                          />
+                        </div>
+                      )}
+                      {f.status === 'duplicate' && f.duplicateOf && (
+                        <p className="text-wood-600 text-xs">Duplicate of: {f.duplicateOf.file_name}</p>
+                      )}
+                      {f.status === 'error' && f.error && <p className="text-xs text-red-600">{f.error}</p>}
+                      {f.status === 'done' && (
+                        <div>
+                          <p className="text-xs text-[#6b7f5e]">Uploaded successfully</p>
+                          {f.aiTags && f.aiTags.length > 0 && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              <span className="text-xs text-stone-400">AI tags:</span>
+                              {f.aiTags.map((tag) => (
+                                <span key={tag} className="rounded bg-[#f0f4ec] px-1.5 py-0.5 text-xs text-[#4a5a3f]">
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
-                {f.status === 'pending' && (
-                  <button onClick={() => removeFile(i)} className="text-stone-400 hover:text-stone-600 flex-shrink-0">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
+                    {f.status === 'pending' && (
+                      <button
+                        onClick={() => removeFile(i)}
+                        className="flex-shrink-0 text-stone-400 hover:text-stone-600"
+                      >
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
       )}
     </div>
   )
@@ -330,7 +596,5 @@ function StatusBadge({ status }: { status: UploadFile['status'] }) {
     error: { label: 'Error', className: 'bg-red-100 text-red-700' },
   }
   const { label, className } = map[status]
-  return (
-    <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${className}`}>{label}</span>
-  )
+  return <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${className}`}>{label}</span>
 }

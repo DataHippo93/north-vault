@@ -25,7 +25,12 @@ export default function ImportClient() {
   const [currentFile, setCurrentFile] = useState('')
   const [currentPhaseLabel, setCurrentPhaseLabel] = useState('')
   const [files, setFiles] = useState<FileResult[]>([])
-  const [summary, setSummary] = useState<{ total: number; uploaded: number; duplicates: number; errors: number } | null>(null)
+  const [summary, setSummary] = useState<{
+    total: number
+    uploaded: number
+    duplicates: number
+    errors: number
+  } | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
 
   const abortRef = useRef<AbortController | null>(null)
@@ -89,7 +94,40 @@ export default function ImportClient() {
           } else if (line.startsWith('data: ') && eventType) {
             try {
               const data = JSON.parse(line.slice(6))
-              handleSSEEvent(eventType, data)
+              switch (eventType) {
+                case 'status':
+                  setStatusMessage(data.message as string)
+                  break
+                case 'progress':
+                  setCurrentFile(data.current as string)
+                  setCurrentPhaseLabel(data.phase as string)
+                  break
+                case 'file':
+                  setFiles((prev) => [
+                    ...prev,
+                    {
+                      name: data.name as string,
+                      status: data.status as FileResult['status'],
+                      tags: data.tags as string[] | undefined,
+                      duplicateOf: data.duplicateOf as string | undefined,
+                      error: data.error as string | undefined,
+                    },
+                  ])
+                  break
+                case 'complete':
+                  setSummary({
+                    total: data.total as number,
+                    uploaded: data.uploaded as number,
+                    duplicates: data.duplicates as number,
+                    errors: data.errors as number,
+                  })
+                  setPhase('complete')
+                  break
+                case 'error':
+                  setErrorMessage(data.message as string)
+                  setPhase('error')
+                  break
+              }
             } catch {
               // skip malformed data
             }
@@ -112,40 +150,6 @@ export default function ImportClient() {
     }
   }, [sharePointUrl, business, aiTagging, dryRun])
 
-  function handleSSEEvent(event: string, data: Record<string, unknown>) {
-    switch (event) {
-      case 'status':
-        setStatusMessage(data.message as string)
-        break
-      case 'progress':
-        setCurrentFile(data.current as string)
-        setCurrentPhaseLabel(data.phase as string)
-        break
-      case 'file':
-        setFiles(prev => [...prev, {
-          name: data.name as string,
-          status: data.status as FileResult['status'],
-          tags: data.tags as string[] | undefined,
-          duplicateOf: data.duplicateOf as string | undefined,
-          error: data.error as string | undefined,
-        }])
-        break
-      case 'complete':
-        setSummary({
-          total: data.total as number,
-          uploaded: data.uploaded as number,
-          duplicates: data.duplicates as number,
-          errors: data.errors as number,
-        })
-        setPhase('complete')
-        break
-      case 'error':
-        setErrorMessage(data.message as string)
-        setPhase('error')
-        break
-    }
-  }
-
   function handleCancel() {
     abortRef.current?.abort()
   }
@@ -153,14 +157,11 @@ export default function ImportClient() {
   const isRunning = phase === 'running'
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="mx-auto max-w-4xl space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <Link
-          href="/admin"
-          className="text-stone-400 hover:text-stone-600 transition-colors"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <Link href="/admin" className="text-stone-400 transition-colors hover:text-stone-600">
+          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
         </Link>
@@ -168,29 +169,29 @@ export default function ImportClient() {
       </div>
 
       {/* Settings card */}
-      <div className="bg-white rounded-xl border border-stone-200 p-6 space-y-5 shadow-sm">
+      <div className="space-y-5 rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
         {/* SharePoint URL */}
         <div>
-          <label className="block text-sm font-medium text-stone-600 mb-1">SharePoint folder URL</label>
+          <label className="mb-1 block text-sm font-medium text-stone-600">SharePoint folder URL</label>
           <input
             type="url"
             value={sharePointUrl}
             onChange={(e) => setSharePointUrl(e.target.value)}
             disabled={isRunning}
             placeholder="https://yourtenant.sharepoint.com/sites/Brand/Shared Documents/Assets"
-            className="w-full px-3 py-2 border border-stone-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#6b7f5e] disabled:bg-stone-50 disabled:text-stone-400"
+            className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:ring-2 focus:ring-[#6b7f5e] focus:outline-none disabled:bg-stone-50 disabled:text-stone-400"
           />
         </div>
 
         {/* Business + toggles */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
-            <label className="block text-sm font-medium text-stone-600 mb-1">Business entity</label>
+            <label className="mb-1 block text-sm font-medium text-stone-600">Business entity</label>
             <select
               value={business}
               onChange={(e) => setBusiness(e.target.value as BusinessEntity)}
               disabled={isRunning}
-              className="w-full px-3 py-2 border border-stone-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#6b7f5e] bg-white disabled:bg-stone-50"
+              className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-[#6b7f5e] focus:outline-none disabled:bg-stone-50"
             >
               <option value="both">Both</option>
               <option value="natures">{"Nature's Storehouse"}</option>
@@ -198,29 +199,29 @@ export default function ImportClient() {
             </select>
           </div>
           <div className="flex flex-col justify-end gap-3">
-            <label className="inline-flex items-center gap-3 cursor-pointer">
+            <label className="inline-flex cursor-pointer items-center gap-3">
               <span className="relative inline-flex items-center">
                 <input
                   type="checkbox"
                   checked={aiTagging}
                   onChange={(e) => setAiTagging(e.target.checked)}
                   disabled={isRunning}
-                  className="sr-only peer"
+                  className="peer sr-only"
                 />
-                <div className="w-9 h-5 bg-stone-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-[#6b7f5e] rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#6b7f5e]" />
+                <div className="peer h-5 w-9 rounded-full bg-stone-300 peer-checked:bg-[#6b7f5e] peer-focus:ring-2 peer-focus:ring-[#6b7f5e] peer-focus:outline-none after:absolute after:top-[2px] after:left-[2px] after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white" />
               </span>
               <span className="text-sm text-stone-600">AI auto-tagging</span>
             </label>
-            <label className="inline-flex items-center gap-3 cursor-pointer">
+            <label className="inline-flex cursor-pointer items-center gap-3">
               <span className="relative inline-flex items-center">
                 <input
                   type="checkbox"
                   checked={dryRun}
                   onChange={(e) => setDryRun(e.target.checked)}
                   disabled={isRunning}
-                  className="sr-only peer"
+                  className="peer sr-only"
                 />
-                <div className="w-9 h-5 bg-stone-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-[#6b7f5e] rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#6b7f5e]" />
+                <div className="peer h-5 w-9 rounded-full bg-stone-300 peer-checked:bg-[#6b7f5e] peer-focus:ring-2 peer-focus:ring-[#6b7f5e] peer-focus:outline-none after:absolute after:top-[2px] after:left-[2px] after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white" />
               </span>
               <span className="text-sm text-stone-600">Dry run (enumerate only, no uploads)</span>
             </label>
@@ -233,21 +234,21 @@ export default function ImportClient() {
             <button
               onClick={startImport}
               disabled={!sharePointUrl.trim()}
-              className="px-6 py-2 bg-[#4a5a3f] text-white rounded-lg text-sm font-medium hover:bg-[#3d4b34] disabled:opacity-50 transition-colors"
+              className="rounded-lg bg-[#4a5a3f] px-6 py-2 text-sm font-medium text-white transition-colors hover:bg-[#3d4b34] disabled:opacity-50"
             >
               {dryRun ? 'Start dry run' : 'Start import'}
             </button>
           ) : (
             <button
               onClick={handleCancel}
-              className="px-6 py-2 bg-stone-600 text-white rounded-lg text-sm font-medium hover:bg-stone-700 transition-colors"
+              className="rounded-lg bg-stone-600 px-6 py-2 text-sm font-medium text-white transition-colors hover:bg-stone-700"
             >
               Cancel
             </button>
           )}
           {isRunning && (
-            <span className="text-sm text-stone-500 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-[#6b7f5e] animate-pulse" />
+            <span className="flex items-center gap-2 text-sm text-stone-500">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-[#6b7f5e]" />
               {currentPhaseLabel ? `${currentPhaseLabel}: ${currentFile}` : statusMessage}
             </span>
           )}
@@ -256,17 +257,17 @@ export default function ImportClient() {
 
       {/* Error banner */}
       {errorMessage && (
-        <div className="bg-red-50 border border-red-200 rounded-xl px-6 py-4">
-          <p className="text-sm text-red-700 font-medium">Import failed</p>
-          <p className="text-sm text-red-600 mt-1">{errorMessage}</p>
+        <div className="rounded-xl border border-red-200 bg-red-50 px-6 py-4">
+          <p className="text-sm font-medium text-red-700">Import failed</p>
+          <p className="mt-1 text-sm text-red-600">{errorMessage}</p>
         </div>
       )}
 
       {/* Summary card */}
       {summary && (
-        <div className="bg-white rounded-xl border border-stone-200 p-6 shadow-sm">
-          <h2 className="text-base font-semibold text-stone-800 mb-4">Import complete</h2>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
+          <h2 className="mb-4 text-base font-semibold text-stone-800">Import complete</h2>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <SummaryStat label="Total files" value={summary.total} color="text-stone-800" />
             <SummaryStat label="Uploaded" value={summary.uploaded} color="text-[#4a5a3f]" />
             <SummaryStat label="Duplicates" value={summary.duplicates} color="text-amber-600" />
@@ -277,29 +278,25 @@ export default function ImportClient() {
 
       {/* File results */}
       {files.length > 0 && (
-        <div className="bg-white rounded-xl border border-stone-200 overflow-hidden shadow-sm">
-          <div className="px-6 py-4 border-b border-stone-200">
-            <h2 className="text-base font-semibold text-stone-800">
-              Files ({files.length})
-            </h2>
+        <div className="overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm">
+          <div className="border-b border-stone-200 px-6 py-4">
+            <h2 className="text-base font-semibold text-stone-800">Files ({files.length})</h2>
           </div>
-          <ul className="divide-y divide-stone-100 max-h-[500px] overflow-y-auto">
+          <ul className="max-h-[500px] divide-y divide-stone-100 overflow-y-auto">
             {files.map((f, i) => (
               <li key={i} className="px-6 py-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-sm font-medium text-stone-800 truncate">{f.name}</span>
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="truncate text-sm font-medium text-stone-800">{f.name}</span>
                   <FileStatusBadge status={f.status} />
                 </div>
                 {f.status === 'duplicate' && f.duplicateOf && (
                   <p className="text-xs text-amber-600">Duplicate of: {f.duplicateOf}</p>
                 )}
-                {f.status === 'error' && f.error && (
-                  <p className="text-xs text-red-600">{f.error}</p>
-                )}
+                {f.status === 'error' && f.error && <p className="text-xs text-red-600">{f.error}</p>}
                 {f.tags && f.tags.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {f.tags.map(tag => (
-                      <span key={tag} className="px-1.5 py-0.5 bg-[#f0f4ec] text-[#4a5a3f] rounded text-xs">
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {f.tags.map((tag) => (
+                      <span key={tag} className="rounded bg-[#f0f4ec] px-1.5 py-0.5 text-xs text-[#4a5a3f]">
                         {tag}
                       </span>
                     ))}
@@ -318,7 +315,7 @@ function SummaryStat({ label, value, color }: { label: string; value: number; co
   return (
     <div className="text-center">
       <div className={`text-2xl font-bold ${color}`}>{value}</div>
-      <div className="text-xs text-stone-500 mt-1">{label}</div>
+      <div className="mt-1 text-xs text-stone-500">{label}</div>
     </div>
   )
 }
@@ -331,7 +328,5 @@ function FileStatusBadge({ status }: { status: FileResult['status'] }) {
     'dry-run': { label: 'Dry run', className: 'bg-blue-50 text-blue-700' },
   }
   const { label, className } = map[status]
-  return (
-    <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${className}`}>{label}</span>
-  )
+  return <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${className}`}>{label}</span>
 }
