@@ -91,7 +91,7 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
       query = query.overlaps('tags', filters.tags)
     }
 
-    query = query.order(sortBy, { ascending: sortDir === 'asc' })
+    query = query.order(sortBy, { ascending: sortDir === 'asc' }).limit(5000)
 
     const { data, error } = await query
     if (error) {

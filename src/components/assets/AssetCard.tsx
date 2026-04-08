@@ -13,12 +13,74 @@ interface Props {
   onClick: () => void
 }
 
+/** Extract a non-black frame from a video at ~2 seconds in */
+function extractVideoFrame(videoUrl: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video')
+    video.crossOrigin = 'anonymous'
+    video.muted = true
+    video.preload = 'metadata'
+
+    const timeout = setTimeout(() => {
+      video.src = ''
+      resolve(null)
+    }, 15000)
+
+    video.onloadedmetadata = () => {
+      // Seek to 2 seconds or 10% of duration, whichever is less
+      video.currentTime = Math.min(2, video.duration * 0.1)
+    }
+
+    video.onseeked = () => {
+      clearTimeout(timeout)
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.min(400, video.videoWidth)
+        canvas.height = Math.round((canvas.width / video.videoWidth) * video.videoHeight)
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          resolve(null)
+          return
+        }
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+        // Check if frame is mostly black (first few frames often are)
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+        let brightness = 0
+        for (let i = 0; i < imageData.data.length; i += 16) {
+          brightness += imageData.data[i] + imageData.data[i + 1] + imageData.data[i + 2]
+        }
+        brightness /= (imageData.data.length / 16) * 3
+
+        if (brightness < 15 && video.currentTime < video.duration * 0.5) {
+          // Too dark — try further in
+          video.currentTime = Math.min(video.currentTime + 3, video.duration * 0.5)
+          return // onseeked will fire again
+        }
+
+        resolve(canvas.toDataURL('image/jpeg', 0.8))
+      } catch {
+        resolve(null)
+      }
+      video.src = ''
+    }
+
+    video.onerror = () => {
+      clearTimeout(timeout)
+      resolve(null)
+    }
+
+    video.src = videoUrl
+  })
+}
+
 export default function AssetCard({ asset, selected, onSelect, onClick }: Props) {
   const supabase = createClient()
   const [thumbUrl, setThumbUrl] = useState<string | null>(null)
 
   useEffect(() => {
-    if (asset.content_type !== 'image' && asset.content_type !== 'pdf' && asset.content_type !== 'document') return
+    const isMedia = asset.content_type === 'image' || asset.content_type === 'video'
+    if (!isMedia && asset.content_type !== 'pdf' && asset.content_type !== 'document') return
 
     async function loadThumb() {
       // If a thumbnail already exists in the DB, sign and use it directly
@@ -48,12 +110,26 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
         // network error — fall through to fallback
       }
 
-      // Fallback: show full image for images, nothing for other types
+      // Fallback for images: show full image
       if (asset.content_type === 'image') {
         const path = asset.storage_path || asset.file_path
         if (!path) return
         const { data } = await supabase.storage.from('northvault-assets').createSignedUrl(path, 3600)
         if (data?.signedUrl) setThumbUrl(data.signedUrl)
+      }
+
+      // Fallback for videos: extract a frame client-side using the browser
+      if (asset.content_type === 'video') {
+        const path = asset.storage_path || asset.file_path
+        if (!path) return
+        const { data } = await supabase.storage.from('northvault-assets').createSignedUrl(path, 3600)
+        if (!data?.signedUrl) return
+        try {
+          const dataUrl = await extractVideoFrame(data.signedUrl)
+          if (dataUrl) setThumbUrl(dataUrl)
+        } catch {
+          // Video may not be playable in browser — show type icon
+        }
       }
     }
 
