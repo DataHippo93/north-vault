@@ -425,7 +425,7 @@ export async function POST(request: NextRequest) {
             notes: pathToNote(f.folderPath),
             extracted_text: extractedText.length > 0 ? extractedText : null,
             barcodes: barcodes.length > 0 ? barcodes : null,
-            uploaded_by: user.id,
+            uploaded_by: user!.id,
             original_created_at: f.lastModified,
           })
 

@@ -138,8 +138,8 @@ async function* enumerateFolder(driveId: string, path: string): AsyncGenerator<S
   let nextUrl: string | null = path
 
   while (nextUrl) {
-    const isFullUrl = nextUrl.startsWith('http')
-    const res = isFullUrl
+    const isFullUrl: boolean = nextUrl.startsWith('http')
+    const res: Response | null = isFullUrl
       ? await fetch(nextUrl, {
           headers: { Authorization: `Bearer ${await getGraphToken()}` },
         }).catch(() => null)
@@ -147,7 +147,7 @@ async function* enumerateFolder(driveId: string, path: string): AsyncGenerator<S
 
     if (!res || !res.ok) break
 
-    const data = await res.json()
+    const data: { value?: DriveItem[]; '@odata.nextLink'?: string } = await res.json()
     const items: DriveItem[] = data.value || []
 
     for (const item of items) {

@@ -125,8 +125,9 @@ async function generatePdfThumbnail(pdfBuffer: Buffer): Promise<Buffer> {
   const canvas = createCanvas(Math.round(scaled.width), Math.round(scaled.height))
   const ctx = canvas.getContext('2d')
 
-  await page.render({
-    canvasContext: ctx as unknown as CanvasRenderingContext2D,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (page.render as any)({
+    canvasContext: ctx,
     viewport: scaled,
   }).promise
 
