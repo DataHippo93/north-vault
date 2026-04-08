@@ -1,6 +1,6 @@
 'use client'
 
-const BUILD_VERSION = '2026-04-08a'
+const BUILD_VERSION = '2026-04-08b'
 
 import { useState, useRef, useCallback } from 'react'
 import { useSearchParams } from 'next/navigation'

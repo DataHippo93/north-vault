@@ -139,11 +139,27 @@ async function* enumerateFolder(driveId: string, path: string): AsyncGenerator<S
 
   while (nextUrl) {
     const isFullUrl: boolean = nextUrl.startsWith('http')
-    const res: Response | null = isFullUrl
-      ? await fetch(nextUrl, {
-          headers: { Authorization: `Bearer ${await getGraphToken()}` },
-        }).catch(() => null)
-      : await graphFetch(nextUrl)
+    let res: Response | null = null
+
+    // Retry with backoff for rate limiting (429) and transient errors
+    for (let attempt = 0; attempt < 4; attempt++) {
+      res = isFullUrl
+        ? await fetch(nextUrl, {
+            headers: { Authorization: `Bearer ${await getGraphToken()}` },
+          }).catch(() => null)
+        : await graphFetch(nextUrl)
+
+      if (res && res.status === 429) {
+        const retryAfter = parseInt(res.headers.get('Retry-After') || '5', 10)
+        await new Promise((r) => setTimeout(r, retryAfter * 1000))
+        continue
+      }
+      if (res && res.status >= 500 && attempt < 3) {
+        await new Promise((r) => setTimeout(r, (attempt + 1) * 2000))
+        continue
+      }
+      break
+    }
 
     if (!res || !res.ok) break
 
@@ -183,8 +199,25 @@ export async function downloadFile(
   downloadUrl: string,
   onProgress?: (bytesRead: number, totalBytes: number | null) => void,
 ): Promise<Buffer> {
-  const res = await fetch(downloadUrl)
-  if (!res.ok) throw new Error(`Failed to download file: ${res.status}`)
+  let res: Response | null = null
+
+  // Retry with backoff for rate limiting and transient errors
+  for (let attempt = 0; attempt < 4; attempt++) {
+    res = await fetch(downloadUrl).catch(() => null)
+
+    if (res && res.status === 429) {
+      const retryAfter = parseInt(res.headers.get('Retry-After') || '5', 10)
+      await new Promise((r) => setTimeout(r, retryAfter * 1000))
+      continue
+    }
+    if (res && res.status >= 500 && attempt < 3) {
+      await new Promise((r) => setTimeout(r, (attempt + 1) * 2000))
+      continue
+    }
+    break
+  }
+
+  if (!res || !res.ok) throw new Error(`Failed to download file: ${res?.status ?? 'network error'}`)
 
   // If no body stream available, fall back to simple arrayBuffer
   if (!res.body) {

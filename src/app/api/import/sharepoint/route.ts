@@ -286,7 +286,7 @@ export async function POST(request: NextRequest) {
         return true
       }
 
-      const DEFAULT_CONCURRENCY = 4
+      const DEFAULT_CONCURRENCY = 2 // keep low to avoid Graph API rate limits
       const LARGE_FILE_CONCURRENCY = 1 // process large files one at a time to limit memory
       let processed = 0
       let enumerated = 0
