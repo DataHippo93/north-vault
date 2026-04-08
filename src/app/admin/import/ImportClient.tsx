@@ -83,6 +83,11 @@ export default function ImportClient() {
     }
   }
 
+  /** Track all file names that completed (uploaded or duplicate) so we can skip them on reconnect */
+  const processedFilesRef = useRef<Set<string>>(new Set())
+  const reconnectCountRef = useRef(0)
+  const MAX_RECONNECTS = 5
+
   const runImport = useCallback(
     async (
       url: string,
@@ -99,6 +104,7 @@ export default function ImportClient() {
           business,
           enableAiTagging: aiTagging,
           dryRun,
+          skipFiles: Array.from(processedFilesRef.current),
         }),
         signal: controller.signal,
       })
@@ -153,18 +159,25 @@ export default function ImportClient() {
                 case 'counts':
                   setCounts({ processed: data.processed as number, total: data.total as number })
                   break
-                case 'file':
+                case 'file': {
+                  const fileName = data.name as string
+                  const fileStatus = data.status as FileResult['status']
+                  // Track completed files for resume
+                  if (fileStatus === 'uploaded' || fileStatus === 'duplicate') {
+                    processedFilesRef.current.add(fileName)
+                  }
                   setFiles((prev) => [
                     ...prev,
                     {
-                      name: data.name as string,
-                      status: data.status as FileResult['status'],
+                      name: fileName,
+                      status: fileStatus,
                       tags: data.tags as string[] | undefined,
                       duplicateOf: data.duplicateOf as string | undefined,
                       error: data.error as string | undefined,
                     },
                   ])
                   break
+                }
                 case 'retry':
                   setRetryInfo(data as RetryInfo)
                   // Mark retrying files in the file list
@@ -208,20 +221,91 @@ export default function ImportClient() {
     [business, aiTagging, dryRun],
   )
 
+  /** Run import with auto-reconnect on connection drops */
+  const runImportWithReconnect = useCallback(
+    async (
+      url: string,
+      controller: AbortController,
+    ): Promise<
+      | { status: 'complete'; total: number; uploaded: number; duplicates: number; errors: number; retried?: number }
+      | { status: 'error' }
+    > => {
+      while (true) {
+        try {
+          const result = await runImport(url, controller)
+
+          // If we got a proper 'complete' event, we're done
+          if (result.status === 'complete') return result
+
+          // If we got an explicit 'error' event from the server, that's a real error — don't retry
+          if (result.status === 'error' && processedFilesRef.current.size === 0) {
+            return result // Nothing was processed, likely an auth/config error
+          }
+
+          // Stream ended without 'complete' — connection was dropped
+          // Fall through to reconnect logic below
+        } catch (err) {
+          if ((err as Error).name === 'AbortError') throw err // User cancelled
+          // Network error — fall through to reconnect
+        }
+
+        // Check reconnect limit
+        reconnectCountRef.current++
+        if (reconnectCountRef.current > MAX_RECONNECTS) {
+          setErrorMessage(
+            `Connection lost after ${MAX_RECONNECTS} reconnect attempts. ` +
+              `${processedFilesRef.current.size} files were processed successfully. ` +
+              `Click "Start import" to resume from where it left off.`,
+          )
+          return { status: 'error' }
+        }
+
+        // Auto-reconnect with backoff
+        const delaySec = Math.min(reconnectCountRef.current * 2, 10)
+        setStatusMessage(
+          `Connection lost — reconnecting in ${delaySec}s... ` +
+            `(${processedFilesRef.current.size} files already processed)`,
+        )
+        setCurrentPhaseLabel('reconnecting')
+        setErrorMessage('')
+
+        await new Promise((r) => setTimeout(r, delaySec * 1000))
+
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+
+        setStatusMessage(
+          `Reconnecting (attempt ${reconnectCountRef.current}/${MAX_RECONNECTS})... ` +
+            `skipping ${processedFilesRef.current.size} already-processed files`,
+        )
+      }
+    },
+    [runImport],
+  )
+
   const startImport = useCallback(async () => {
     const targetUrl = urlQueue.length > 0 ? urlQueue[0] : sharePointUrl
     if (!targetUrl.trim()) return
 
     const queue = urlQueue.length > 0 ? urlQueue : [sharePointUrl]
 
+    // If resuming after an error, keep accumulated files; otherwise reset
+    const isResume = phase === 'error' && processedFilesRef.current.size > 0
+    if (!isResume) {
+      processedFilesRef.current.clear()
+      reconnectCountRef.current = 0
+      setFiles([])
+      setCounts({ processed: 0, total: 0 })
+      setQueueSummaries([])
+    } else {
+      // Reset reconnect counter for fresh attempts
+      reconnectCountRef.current = 0
+    }
+
     setPhase('running')
-    setFiles([])
     setSummary(null)
     setErrorMessage('')
     setRetryInfo(null)
-    setCounts({ processed: 0, total: 0 })
-    setQueueSummaries([])
-    setStatusMessage('Connecting...')
+    setStatusMessage(isResume ? 'Resuming import...' : 'Connecting...')
     setCurrentFile('')
     setCurrentPhaseLabel('')
 
@@ -235,11 +319,13 @@ export default function ImportClient() {
         setQueueIndex(i)
         if (queue.length > 1) {
           setStatusMessage(`Folder ${i + 1} of ${queue.length}: connecting...`)
-          setFiles([])
-          setSummary(null)
+          if (!isResume) {
+            setFiles([])
+            setSummary(null)
+          }
         }
 
-        const result = await runImport(queue[i], controller)
+        const result = await runImportWithReconnect(queue[i], controller)
 
         if (result.status === 'error') {
           setPhase('error')
@@ -277,7 +363,7 @@ export default function ImportClient() {
     } finally {
       releaseWakeLock()
     }
-  }, [sharePointUrl, urlQueue, business, aiTagging, dryRun, runImport])
+  }, [sharePointUrl, urlQueue, phase, aiTagging, dryRun, runImportWithReconnect])
 
   function handleCancel() {
     abortRef.current?.abort()
@@ -410,7 +496,7 @@ export default function ImportClient() {
               disabled={!isQueue && !sharePointUrl.trim()}
               className="rounded-lg bg-[#4a5a3f] px-6 py-2 text-sm font-medium text-white transition-colors hover:bg-[#3d4b34] disabled:opacity-50"
             >
-              {dryRun ? 'Start dry run' : 'Start import'}
+              {dryRun ? 'Start dry run' : phase === 'error' && files.length > 0 ? 'Resume import' : 'Start import'}
             </button>
           ) : (
             <button

@@ -70,12 +70,17 @@ export async function POST(request: NextRequest) {
     business = 'both',
     enableAiTagging = true,
     dryRun = false,
+    skipFiles = [],
   } = body as {
     sharePointUrl: string
     business?: string
     enableAiTagging?: boolean
     dryRun?: boolean
+    /** File names already processed in a prior connection — skip these on resume */
+    skipFiles?: string[]
   }
+
+  const skipSet = new Set(skipFiles)
 
   if (!sharePointUrl) return NextResponse.json({ error: 'sharePointUrl is required' }, { status: 400 })
 
@@ -324,6 +329,18 @@ export async function POST(request: NextRequest) {
           process.env.SHAREPOINT_ADK_DRIVE_ID,
         )) {
           send('progress', { current: spFile.name, phase: 'enumerate' })
+
+          // Skip files already processed in a prior connection (resume support)
+          const spDisplayName = spFile.path ? `${spFile.path}/${spFile.name}` : spFile.name
+          if (skipSet.has(spDisplayName) || skipSet.has(spFile.name)) {
+            enumerated++
+            processed++
+            results.total++
+            results.duplicates++
+            send('file', { name: spDisplayName, status: 'duplicate', duplicateOf: '(already processed)' })
+            send('counts', { processed, total: enumerated })
+            continue
+          }
 
           if (dryRun) {
             results.total++
