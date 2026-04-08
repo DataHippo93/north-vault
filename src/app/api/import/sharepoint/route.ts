@@ -7,7 +7,7 @@ import { analyzeImageWithClaude, generateThumbnail, tusUpload, guessMimeType } f
 import JSZip from 'jszip'
 
 export const runtime = 'nodejs'
-export const maxDuration = 900 // 15 min — Vercel Pro maximum
+export const maxDuration = 300 // 5 min — Vercel Hobby maximum
 
 // Zips must be fully buffered for extraction — skip zips above this
 const MAX_ZIP_BYTES = 500 * 1024 * 1024
