@@ -1,11 +1,5 @@
-import * as faceapi from '@vladmandic/face-api'
-import canvas from 'canvas'
 import path from 'path'
 import sharp from 'sharp'
-
-const { Canvas, Image, ImageData } = canvas
-
-let modelsLoaded = false
 
 const DETECTION_CONFIDENCE = 0.5
 const MAX_IMAGE_DIM = 1200
@@ -20,11 +14,23 @@ export interface DetectedFace {
   cropBuffer: Buffer
 }
 
+// Lazy-loaded modules — face-api and canvas use native bindings
+// that crash at import time in Vercel's build environment
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let faceapi: any = null
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let canvasModule: any = null
+let modelsLoaded = false
+
 async function ensureModels() {
   if (modelsLoaded) return
 
-  // Monkey-patch canvas into face-api's environment
-  faceapi.env.monkeyPatch({ Canvas, Image, ImageData } as unknown as faceapi.Environment)
+  // Dynamic imports to avoid build-time crashes in serverless
+  if (!faceapi) faceapi = await import('@vladmandic/face-api')
+  if (!canvasModule) canvasModule = await import('canvas')
+
+  const { Canvas, Image, ImageData } = canvasModule
+  faceapi.env.monkeyPatch({ Canvas, Image, ImageData } as unknown as Record<string, unknown>)
 
   const modelPath = path.join(process.cwd(), 'public', 'models', 'face-api')
   await faceapi.nets.ssdMobilenetv1.loadFromDisk(modelPath)
@@ -39,6 +45,7 @@ async function ensureModels() {
  */
 export async function detectFaces(imageBuffer: Buffer): Promise<DetectedFace[]> {
   await ensureModels()
+  if (!faceapi || !canvasModule) throw new Error('Face detection modules not loaded')
 
   // Resize image to reasonable dimensions for detection
   const resized = await sharp(imageBuffer)
@@ -46,8 +53,8 @@ export async function detectFaces(imageBuffer: Buffer): Promise<DetectedFace[]> 
     .jpeg({ quality: 90 })
     .toBuffer()
 
-  const img = await canvas.loadImage(resized)
-  const cnv = canvas.createCanvas(img.width, img.height)
+  const img = await canvasModule.loadImage(resized)
+  const cnv = canvasModule.createCanvas(img.width, img.height)
   const ctx = cnv.getContext('2d')
   ctx.drawImage(img, 0, 0)
 
@@ -86,7 +93,6 @@ export async function detectFaces(imageBuffer: Buffer): Promise<DetectedFace[]> 
         .jpeg({ quality: 85 })
         .toBuffer()
     } catch {
-      // If crop fails (edge case), use a small placeholder
       cropBuffer = await sharp({
         create: { width: 150, height: 150, channels: 3, background: { r: 200, g: 200, b: 200 } },
       })

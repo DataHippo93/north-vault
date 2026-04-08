@@ -22,7 +22,7 @@
     "@supabase/ssr": "^0.10.0",
     "@supabase/supabase-js": "^2.101.1",
     "@t3-oss/env-nextjs": "^0.13.11",
-    "@tensorflow/tfjs-node": "^4.22.0",
+    "@tensorflow/tfjs": "^4.22.0",
     "@vladmandic/face-api": "^1.7.15",
     "canvas": "^3.2.3",
     "exifr": "^7.1.3",

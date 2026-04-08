@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import Link from 'next/link'
 
 interface Profile {
   id: string
@@ -81,25 +80,6 @@ export default function AdminClient({ currentUserId, users: initialUsers }: Prop
   return (
     <div className="mx-auto max-w-4xl space-y-8">
       <h1 className="text-sage-950 text-2xl font-bold">Admin</h1>
-
-      {/* Quick actions */}
-      <div className="rounded-xl border border-slate-200 bg-white p-6">
-        <h2 className="mb-3 text-base font-semibold text-slate-900">Tools</h2>
-        <Link
-          href="/admin/import"
-          className="inline-flex items-center gap-2 rounded-lg bg-[#4a5a3f] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#3d4b34]"
-        >
-          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
-            />
-          </svg>
-          SharePoint Import
-        </Link>
-      </div>
 
       {/* Invite user */}
       <div className="border-sage-200 rounded-xl border bg-white p-6 shadow-sm">
