@@ -63,6 +63,25 @@ export default function ImportClient() {
   const [counts, setCounts] = useState<{ processed: number; total: number }>({ processed: 0, total: 0 })
 
   const abortRef = useRef<AbortController | null>(null)
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null)
+
+  /** Request a Wake Lock to prevent the browser tab from sleeping during long imports */
+  async function acquireWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLockRef.current = await navigator.wakeLock.request('screen')
+      }
+    } catch {
+      // Wake Lock not supported or denied — import will still work, just might be interrupted
+    }
+  }
+
+  function releaseWakeLock() {
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release().catch(() => {})
+      wakeLockRef.current = null
+    }
+  }
 
   const runImport = useCallback(
     async (
@@ -124,6 +143,12 @@ export default function ImportClient() {
                 case 'progress':
                   setCurrentFile(data.current as string)
                   setCurrentPhaseLabel(data.phase as string)
+                  break
+                case 'heartbeat':
+                  // Keep-alive during large file transfers — update progress display
+                  if (data.progress) {
+                    setCurrentPhaseLabel(`${data.phase as string} — ${data.progress as string}`)
+                  }
                   break
                 case 'counts':
                   setCounts({ processed: data.processed as number, total: data.total as number })
@@ -203,6 +228,8 @@ export default function ImportClient() {
     const controller = new AbortController()
     abortRef.current = controller
 
+    await acquireWakeLock()
+
     try {
       for (let i = 0; i < queue.length; i++) {
         setQueueIndex(i)
@@ -247,6 +274,8 @@ export default function ImportClient() {
         setErrorMessage((err as Error).message)
         setPhase('error')
       }
+    } finally {
+      releaseWakeLock()
     }
   }, [sharePointUrl, urlQueue, business, aiTagging, dryRun, runImport])
 
@@ -397,6 +426,7 @@ export default function ImportClient() {
                 <span className="h-2 w-2 animate-pulse rounded-full bg-[#6b7f5e]" />
                 {currentPhaseLabel ? `${currentPhaseLabel}: ${currentFile}` : statusMessage}
               </span>
+              <span className="text-xs text-stone-400">Keep this tab open until import completes</span>
               {counts.total > 0 && (
                 <div className="flex items-center gap-2">
                   <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-stone-200">

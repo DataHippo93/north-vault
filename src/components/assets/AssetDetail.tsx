@@ -5,6 +5,7 @@ import Image from 'next/image'
 import { createClient } from '@/lib/supabase/client'
 import type { Asset } from '@/types'
 import { formatFileSize } from '@/lib/utils/fileType'
+import SocialMetrics from './SocialMetrics'
 
 interface Props {
   asset: Asset
@@ -440,6 +441,9 @@ export default function AssetDetail({
               </div>
             </div>
           )}
+
+          {/* Social Media Performance */}
+          <SocialMetrics assetId={asset.id} />
 
           {/* Notes */}
           <div className="space-y-2">

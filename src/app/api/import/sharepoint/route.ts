@@ -3,121 +3,16 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { parseSharePointUrl, enumerateFiles, downloadFile } from '@/lib/graph/sharepoint'
 import { computeSHA256Server } from '@/lib/utils/serverHash'
 import { getContentType } from '@/lib/utils/fileType'
-import Anthropic from '@anthropic-ai/sdk'
-import sharp from 'sharp'
+import { analyzeImageWithClaude, generateThumbnail, tusUpload, guessMimeType } from '@/lib/import/shared'
 import JSZip from 'jszip'
-import * as tus from 'tus-js-client'
-import { Readable } from 'stream'
 
 export const runtime = 'nodejs'
-export const maxDuration = 300 // 5 min max on Vercel Pro
+export const maxDuration = 900 // 15 min — Vercel Pro maximum
 
 // Zips must be fully buffered for extraction — skip zips above this
 const MAX_ZIP_BYTES = 500 * 1024 * 1024
-// Images above this skip AI tagging (too large / too slow for vision API)
-const MAX_VISION_BYTES = 50 * 1024 * 1024
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-
-async function analyzeImageWithClaude(
-  buffer: Buffer,
-  mimeType: string,
-  fileName: string,
-  folderPath: string,
-): Promise<{ tags: string[]; extractedText: string[]; barcodes: string[] }> {
-  let imageBuffer = buffer
-  let mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' = 'image/jpeg'
-
-  try {
-    const metadata = await sharp(imageBuffer).metadata()
-    const maxDim = Math.max(metadata.width ?? 0, metadata.height ?? 0)
-    if (maxDim > 4000) {
-      imageBuffer = await sharp(imageBuffer)
-        .resize({ width: 4000, height: 4000, fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 85 })
-        .toBuffer()
-      mediaType = 'image/jpeg'
-    } else {
-      const mt = mimeType.toLowerCase()
-      if (mt.includes('png')) mediaType = 'image/png'
-      else if (mt.includes('gif')) mediaType = 'image/gif'
-      else if (mt.includes('webp')) mediaType = 'image/webp'
-      else mediaType = 'image/jpeg'
-    }
-  } catch {
-    return { tags: [], extractedText: [], barcodes: [] }
-  }
-
-  const imageBase64 = imageBuffer.toString('base64')
-  const folderContext = folderPath ? `\nSharePoint folder path: ${folderPath}` : ''
-
-  const message = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 1024,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
-          {
-            type: 'text',
-            text: `Analyze this image and return a JSON object with these fields:
-
-- "tags": array of 10-20 lowercase descriptive tags covering ALL of the following categories where applicable:
-  • SUBJECT: what the product/object/scene is (e.g. "soap", "candle", "essential oil", "tincture")
-  • BACKGROUND: background style (e.g. "white background", "lifestyle", "outdoor", "studio", "rustic wood", "natural setting", "flat lay", "on-model")
-  • COLORS: dominant colors (e.g. "green", "purple", "earth tones", "neutral")
-  • MOOD/AESTHETIC: visual feel (e.g. "minimalist", "cozy", "natural", "artisan", "luxury", "organic")
-  • COMPOSITION: shot type (e.g. "close-up", "macro", "overhead", "group shot", "single product", "hero shot")
-  • SOCIAL MEDIA USE: inferred use case (e.g. "instagram-ready", "product launch", "story format", "banner", "square crop friendly")
-  • BRAND CONTEXT: if identifiable as Nature's Storehouse grocery store or ADK Fragrance Farm, include that; also include "cbd", "hemp", "fragrance", "food", "grocery", etc. as relevant
-  • SEASON/OCCASION: if applicable (e.g. "holiday", "summer", "fall", "gift")
-
-- "extracted_text": array of all readable text in the image
-- "barcodes": array of any barcode or QR code values visible
-
-File name: "${fileName}"${folderContext}
-
-Return ONLY valid JSON, nothing else.`,
-          },
-        ],
-      },
-    ],
-  })
-
-  const responseText = message.content[0].type === 'text' ? message.content[0].text : ''
-  try {
-    const parsed = JSON.parse(responseText.replace(/```json\n?|\n?```/g, '').trim())
-    return {
-      tags: Array.isArray(parsed.tags)
-        ? parsed.tags
-            .map((t: string) =>
-              t
-                .trim()
-                .toLowerCase()
-                .replace(/[^a-z0-9\s-]/g, ''),
-            )
-            .filter(Boolean)
-        : [],
-      extractedText: Array.isArray(parsed.extracted_text) ? parsed.extracted_text.filter(Boolean) : [],
-      barcodes: Array.isArray(parsed.barcodes) ? parsed.barcodes.filter(Boolean) : [],
-    }
-  } catch {
-    return {
-      tags: responseText
-        .split(',')
-        .map((t) =>
-          t
-            .trim()
-            .toLowerCase()
-            .replace(/[^a-z0-9\s-]/g, ''),
-        )
-        .filter(Boolean),
-      extractedText: [],
-      barcodes: [],
-    }
-  }
-}
+// Files above this skip SHA-256 dedup (use name+size instead) to avoid holding huge buffers
+const LARGE_FILE_BYTES = 100 * 1024 * 1024
 
 /** Convert a SharePoint folder path to slug tags: "Content Marketing/Spring 2024" → ["content-marketing", "spring-2024"] */
 function pathToTags(path: string): string[] {
@@ -152,68 +47,6 @@ interface FileToProcess {
   size: number
   folderPath: string
   lastModified: string | null
-}
-
-/** Generate a 400px JPEG thumbnail and upload it to thumbs/ prefix. Returns the path or null. */
-async function generateThumbnail(
-  buffer: Buffer,
-  storagePath: string,
-  serviceClient: Awaited<ReturnType<typeof createServiceClient>>,
-): Promise<string | null> {
-  try {
-    const thumb = await sharp(buffer)
-      .resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 80 })
-      .toBuffer()
-    const thumbPath = `thumbs/${storagePath}.jpg`
-    const { error } = await serviceClient.storage
-      .from('northvault-assets')
-      .upload(thumbPath, thumb, { contentType: 'image/jpeg', upsert: true })
-    return error ? null : thumbPath
-  } catch {
-    return null
-  }
-}
-
-/** Upload a file to Supabase Storage via TUS resumable protocol.
- *  Works for any file size and automatically resumes on transient failures. */
-async function tusUpload(
-  bucket: string,
-  objectPath: string,
-  fileBody: Buffer,
-  fileSize: number,
-  contentType: string,
-  serviceRoleKey: string,
-): Promise<{ error: string | null }> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-
-  return new Promise((resolve) => {
-    const upload = new tus.Upload(Readable.from(fileBody) as unknown as tus.Upload['file'], {
-      endpoint: `${supabaseUrl}/storage/v1/upload/resumable`,
-      retryDelays: [1000, 3000, 5000, 10000],
-      headers: {
-        authorization: `Bearer ${serviceRoleKey}`,
-        'x-upsert': 'false',
-      },
-      uploadDataDuringCreation: true,
-      removeFingerprintOnSuccess: true,
-      metadata: {
-        bucketName: bucket,
-        objectName: objectPath,
-        contentType,
-        cacheControl: '3600',
-      },
-      chunkSize: 6 * 1024 * 1024, // 6 MB chunks
-      uploadSize: fileSize,
-      onError(err) {
-        resolve({ error: err.message })
-      },
-      onSuccess() {
-        resolve({ error: null })
-      },
-    })
-    upload.start()
-  })
 }
 
 export async function POST(request: NextRequest) {
@@ -266,9 +99,6 @@ export async function POST(request: NextRequest) {
       const failedFiles: { file: FileToProcess; error: string }[] = []
 
       /** Upload one file to storage and insert the DB record.
-       *  For files with a buffer (small/zip entries): hash first, skip if dup, then upload.
-       *  For files with only a downloadUrl (large files): stream-upload with inline hashing,
-       *  then check for dup and delete if found.
        *  Returns true on success/duplicate, false on error (eligible for retry). */
       async function processFile(f: FileToProcess, isRetry = false): Promise<boolean> {
         if (!isRetry) results.total++
@@ -277,60 +107,33 @@ export async function POST(request: NextRequest) {
         const tempPath = `import/${Date.now()}-${Math.random().toString(36).slice(2)}${ext ? `.${ext}` : ''}`
 
         let hash: string
-        let storagePath: string
+        let fileBuffer: Buffer
+        const storagePath = tempPath
 
+        // --- Get the file into memory (either already buffered or download) ---
         if (f.buffer) {
-          // --- Buffered path (small file / zip entry) ---
-          hash = computeSHA256Server(f.buffer)
-
-          const { data: existing } = await serviceClient
-            .schema('northvault')
-            .from('assets')
-            .select('id, file_name')
-            .eq('sha256_hash', hash)
-            .maybeSingle()
-
-          if (existing) {
-            if (!isRetry) results.duplicates++
-            send('file', { name: displayName, status: 'duplicate', duplicateOf: existing.file_name })
-            return true
-          }
-
-          send('progress', { current: displayName, phase: isRetry ? 'retrying' : 'uploading' })
-          const { error: tusErr } = await tusUpload(
-            'northvault-assets',
-            tempPath,
-            f.buffer,
-            f.buffer.length,
-            f.mimeType,
-            process.env.SUPABASE_SERVICE_ROLE_KEY!,
-          )
-
-          if (tusErr) {
-            if (!isRetry) {
-              results.errors++
-              failedFiles.push({ file: f, error: tusErr })
-            }
-            send('file', { name: displayName, status: 'error', error: tusErr })
-            return false
-          }
-          storagePath = tempPath
+          fileBuffer = f.buffer
         } else {
-          // --- Streaming path (large file, no buffer in memory) ---
           if (!f.downloadUrl) {
             if (!isRetry) results.errors++
             send('file', { name: displayName, status: 'error', error: 'No download URL' })
             return false
           }
 
-          send('progress', { current: displayName, phase: isRetry ? 'retrying' : 'downloading' })
+          const sizeMB = Math.round(f.size / 1024 / 1024)
+          send('progress', { current: displayName, phase: `downloading${sizeMB > 50 ? ` (${sizeMB} MB)` : ''}` })
 
-          // Download to buffer so we can hash before uploading + use TUS resumable
-          let dlBuffer: Buffer
           try {
-            const dlRes = await fetch(f.downloadUrl)
-            if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`)
-            dlBuffer = Buffer.from(await dlRes.arrayBuffer())
+            // Stream download with progress heartbeats to keep SSE alive
+            fileBuffer = await downloadFile(f.downloadUrl, (bytesRead, totalBytes) => {
+              const pct = totalBytes ? Math.round((bytesRead / totalBytes) * 100) : null
+              const dlMB = Math.round(bytesRead / 1024 / 1024)
+              send('heartbeat', {
+                file: displayName,
+                phase: 'downloading',
+                progress: pct ? `${dlMB} MB (${pct}%)` : `${dlMB} MB`,
+              })
+            })
           } catch (err) {
             const errMsg = `Download failed: ${(err as Error).message}`
             if (!isRetry) {
@@ -340,10 +143,30 @@ export async function POST(request: NextRequest) {
             send('file', { name: displayName, status: 'error', error: errMsg })
             return false
           }
+        }
 
-          hash = computeSHA256Server(dlBuffer)
+        // --- Dedup check ---
+        const isLargeFile = fileBuffer.length > LARGE_FILE_BYTES
+        if (isLargeFile) {
+          // For large files: dedup by original filename + file size (fast, avoids hashing 500MB)
+          const { data: existing } = await serviceClient
+            .schema('northvault')
+            .from('assets')
+            .select('id, file_name')
+            .eq('original_filename', f.name)
+            .eq('file_size', fileBuffer.length)
+            .maybeSingle()
 
-          // Check for duplicate before uploading
+          if (existing) {
+            if (!isRetry) results.duplicates++
+            send('file', { name: displayName, status: 'duplicate', duplicateOf: existing.file_name })
+            return true
+          }
+          // Use a placeholder hash — large files skip SHA-256 for performance
+          hash = `size:${fileBuffer.length}:name:${f.name}`
+        } else {
+          hash = computeSHA256Server(fileBuffer)
+
           const { data: existing } = await serviceClient
             .schema('northvault')
             .from('assets')
@@ -356,27 +179,37 @@ export async function POST(request: NextRequest) {
             send('file', { name: displayName, status: 'duplicate', duplicateOf: existing.file_name })
             return true
           }
+        }
 
-          send('progress', { current: displayName, phase: isRetry ? 'retrying' : 'uploading' })
-          const { error: tusErr } = await tusUpload(
-            'northvault-assets',
-            tempPath,
-            dlBuffer,
-            dlBuffer.length,
-            f.mimeType,
-            process.env.SUPABASE_SERVICE_ROLE_KEY!,
-          )
+        // --- Upload via TUS ---
+        send('progress', { current: displayName, phase: isRetry ? 'retrying' : 'uploading' })
 
-          if (tusErr) {
-            if (!isRetry) {
-              results.errors++
-              failedFiles.push({ file: f, error: tusErr })
-            }
-            send('file', { name: displayName, status: 'error', error: tusErr })
-            return false
+        // Send heartbeats during upload to keep SSE alive for large files
+        let uploadHeartbeat: ReturnType<typeof setInterval> | null = null
+        if (isLargeFile) {
+          uploadHeartbeat = setInterval(() => {
+            send('heartbeat', { file: displayName, phase: 'uploading' })
+          }, 10_000)
+        }
+
+        const { error: tusErr } = await tusUpload(
+          'northvault-assets',
+          tempPath,
+          fileBuffer,
+          fileBuffer.length,
+          f.mimeType,
+          process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        )
+
+        if (uploadHeartbeat) clearInterval(uploadHeartbeat)
+
+        if (tusErr) {
+          if (!isRetry) {
+            results.errors++
+            failedFiles.push({ file: f, error: tusErr })
           }
-
-          storagePath = tempPath
+          send('file', { name: displayName, status: 'error', error: tusErr })
+          return false
         }
 
         const { data: urlData } = await serviceClient.storage
@@ -389,15 +222,16 @@ export async function POST(request: NextRequest) {
         let barcodes: string[] = []
         let thumbnailPath: string | null = null
 
-        if (f.buffer && contentType === 'image') {
-          // Generate thumbnail from the buffered image
-          thumbnailPath = await generateThumbnail(f.buffer, storagePath, serviceClient)
+        if (contentType === 'image') {
+          // Generate thumbnail
+          thumbnailPath = await generateThumbnail(fileBuffer, storagePath, serviceClient)
 
-          // AI vision tagging — only for reasonably-sized images
-          if (enableAiTagging && f.buffer.length <= MAX_VISION_BYTES) {
+          // AI vision tagging
+          if (enableAiTagging) {
             send('progress', { current: displayName, phase: 'tagging' })
             try {
-              const result = await analyzeImageWithClaude(f.buffer, f.mimeType, f.name, f.folderPath)
+              const folderContext = f.folderPath ? `SharePoint folder path: ${f.folderPath}` : ''
+              const result = await analyzeImageWithClaude(fileBuffer, f.mimeType, f.name, folderContext)
               tags = Array.from(new Set([...tags, ...result.tags]))
               extractedText = result.extractedText
               barcodes = result.barcodes
@@ -414,7 +248,7 @@ export async function POST(request: NextRequest) {
             file_name: f.name,
             original_filename: f.name,
             sha256_hash: hash,
-            file_size: f.size,
+            file_size: fileBuffer.length,
             mime_type: f.mimeType,
             content_type: contentType,
             storage_path: storagePath,
@@ -447,12 +281,14 @@ export async function POST(request: NextRequest) {
         return true
       }
 
-      const CONCURRENCY = 4
+      const DEFAULT_CONCURRENCY = 4
+      const LARGE_FILE_CONCURRENCY = 1 // process large files one at a time to limit memory
       let processed = 0
       let enumerated = 0
 
       // Concurrent upload pool — files start uploading as soon as enumerated
       const activePool = new Set<Promise<void>>()
+      let currentConcurrency = DEFAULT_CONCURRENCY
 
       function enqueue(item: FileToProcess) {
         const task = processFile(item)
@@ -467,7 +303,7 @@ export async function POST(request: NextRequest) {
       }
 
       async function waitForSlot() {
-        while (activePool.size >= CONCURRENCY) {
+        while (activePool.size >= currentConcurrency) {
           await Promise.race(activePool)
         }
       }
@@ -600,37 +436,52 @@ export async function POST(request: NextRequest) {
               enqueue(item)
             }
           } else {
-            // Non-zip file: download and queue for concurrent processing
-            let buffer: Buffer | null = null
-            let downloadUrl: string | undefined
+            // Non-zip file: download with progress heartbeats, then queue for upload
+            const isLarge = spFile.size > LARGE_FILE_BYTES
 
-            if (spFile.size > MAX_ZIP_BYTES) {
-              // Very large file — pass downloadUrl for TUS streaming
-              downloadUrl = spFile.downloadUrl
-            } else {
-              try {
-                send('progress', { current: spFile.name, phase: 'downloading' })
-                buffer = await downloadFile(spFile.downloadUrl)
-              } catch (err) {
-                results.errors++
-                results.total++
-                enumerated++
-                const errMsg = (err as Error).message
-                send('file', { name: spFile.name, status: 'error', error: errMsg })
-                failedFiles.push({
-                  file: {
-                    name: spFile.name,
-                    buffer: null,
-                    downloadUrl: spFile.downloadUrl,
-                    mimeType: spFile.mimeType,
-                    size: spFile.size,
-                    folderPath: spFile.path,
-                    lastModified: spFile.lastModified,
-                  },
-                  error: errMsg,
+            // Lower concurrency when hitting large files so we don't OOM
+            if (isLarge) {
+              currentConcurrency = LARGE_FILE_CONCURRENCY
+              // Drain existing pool before starting the large download
+              await drainPool()
+            }
+
+            let buffer: Buffer
+            try {
+              const sizeMB = Math.round(spFile.size / 1024 / 1024)
+              send('progress', {
+                current: spFile.name,
+                phase: `downloading${sizeMB > 50 ? ` (${sizeMB} MB)` : ''}`,
+              })
+              buffer = await downloadFile(spFile.downloadUrl, (bytesRead, totalBytes) => {
+                const pct = totalBytes ? Math.round((bytesRead / totalBytes) * 100) : null
+                const dlMB = Math.round(bytesRead / 1024 / 1024)
+                send('heartbeat', {
+                  file: spFile.name,
+                  phase: 'downloading',
+                  progress: pct ? `${dlMB} MB (${pct}%)` : `${dlMB} MB`,
                 })
-                continue
-              }
+              })
+            } catch (err) {
+              results.errors++
+              results.total++
+              enumerated++
+              const errMsg = (err as Error).message
+              send('file', { name: spFile.name, status: 'error', error: errMsg })
+              failedFiles.push({
+                file: {
+                  name: spFile.name,
+                  buffer: null,
+                  downloadUrl: spFile.downloadUrl,
+                  mimeType: spFile.mimeType,
+                  size: spFile.size,
+                  folderPath: spFile.path,
+                  lastModified: spFile.lastModified,
+                },
+                error: errMsg,
+              })
+              if (isLarge) currentConcurrency = DEFAULT_CONCURRENCY
+              continue
             }
 
             enumerated++
@@ -639,12 +490,15 @@ export async function POST(request: NextRequest) {
             enqueue({
               name: spFile.name,
               buffer,
-              downloadUrl,
+              downloadUrl: undefined,
               mimeType: spFile.mimeType,
               size: spFile.size,
               folderPath: spFile.path,
               lastModified: spFile.lastModified,
             })
+
+            // Restore concurrency after large file is enqueued
+            if (isLarge) currentConcurrency = DEFAULT_CONCURRENCY
           }
         }
 
@@ -679,7 +533,15 @@ export async function POST(request: NextRequest) {
             let fileToProcess = file
             if (!file.buffer && file.downloadUrl) {
               try {
-                const buf = await downloadFile(file.downloadUrl)
+                const buf = await downloadFile(file.downloadUrl, (bytesRead, totalBytes) => {
+                  const pct = totalBytes ? Math.round((bytesRead / totalBytes) * 100) : null
+                  const dlMB = Math.round(bytesRead / 1024 / 1024)
+                  send('heartbeat', {
+                    file: displayName,
+                    phase: 'retry downloading',
+                    progress: pct ? `${dlMB} MB (${pct}%)` : `${dlMB} MB`,
+                  })
+                })
                 fileToProcess = { ...file, buffer: buf }
               } catch (err) {
                 send('file', {
@@ -728,34 +590,4 @@ export async function POST(request: NextRequest) {
       Connection: 'keep-alive',
     },
   })
-}
-
-/** Best-effort MIME type from file extension */
-function guessMimeType(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() ?? ''
-  const map: Record<string, string> = {
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    png: 'image/png',
-    gif: 'image/gif',
-    webp: 'image/webp',
-    heic: 'image/heic',
-    heif: 'image/heif',
-    tif: 'image/tiff',
-    tiff: 'image/tiff',
-    svg: 'image/svg+xml',
-    mp4: 'video/mp4',
-    mov: 'video/quicktime',
-    avi: 'video/x-msvideo',
-    mkv: 'video/x-matroska',
-    pdf: 'application/pdf',
-    doc: 'application/msword',
-    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    xls: 'application/vnd.ms-excel',
-    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    psd: 'image/vnd.adobe.photoshop',
-    ai: 'application/postscript',
-    eps: 'application/postscript',
-  }
-  return map[ext] ?? 'application/octet-stream'
 }

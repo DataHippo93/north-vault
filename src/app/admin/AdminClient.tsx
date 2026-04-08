@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 
 interface Profile {
   id: string
@@ -119,6 +120,54 @@ export default function AdminClient({ currentUserId, users: initialUsers }: Prop
             {inviteResult.error}
           </p>
         )}
+      </div>
+
+      {/* Tools */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Link
+          href="/admin/social"
+          className="border-sage-200 hover:border-vault-300 flex items-center gap-4 rounded-xl border bg-white p-5 shadow-sm transition-colors"
+        >
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-100">
+            <svg
+              className="h-5 w-5 text-blue-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+          </div>
+          <div>
+            <div className="text-sage-900 text-sm font-semibold">Social Media</div>
+            <div className="text-sage-500 text-xs">Import creatives &amp; track performance</div>
+          </div>
+        </Link>
+        <Link
+          href="/admin/import"
+          className="border-sage-200 hover:border-vault-300 flex items-center gap-4 rounded-xl border bg-white p-5 shadow-sm transition-colors"
+        >
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-100">
+            <svg
+              className="h-5 w-5 text-green-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
+              />
+            </svg>
+          </div>
+          <div>
+            <div className="text-sage-900 text-sm font-semibold">SharePoint Import</div>
+            <div className="text-sage-500 text-xs">Import files from SharePoint</div>
+          </div>
+        </Link>
       </div>
 
       {/* User list */}

@@ -177,9 +177,40 @@ async function* enumerateFolder(driveId: string, path: string): AsyncGenerator<S
 
 /**
  * Download a file from SharePoint by its download URL.
+ * Streams into a Buffer with periodic progress callbacks to keep SSE alive.
  */
-export async function downloadFile(downloadUrl: string): Promise<Buffer> {
+export async function downloadFile(
+  downloadUrl: string,
+  onProgress?: (bytesRead: number, totalBytes: number | null) => void,
+): Promise<Buffer> {
   const res = await fetch(downloadUrl)
   if (!res.ok) throw new Error(`Failed to download file: ${res.status}`)
-  return Buffer.from(await res.arrayBuffer())
+
+  // If no body stream available, fall back to simple arrayBuffer
+  if (!res.body) {
+    return Buffer.from(await res.arrayBuffer())
+  }
+
+  const totalBytes = res.headers.get('content-length') ? parseInt(res.headers.get('content-length')!, 10) : null
+
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let bytesRead = 0
+  let lastReport = 0
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    bytesRead += value.length
+
+    // Report progress every ~2MB to keep SSE alive
+    if (onProgress && bytesRead - lastReport > 2 * 1024 * 1024) {
+      onProgress(bytesRead, totalBytes)
+      lastReport = bytesRead
+    }
+  }
+
+  if (onProgress) onProgress(bytesRead, totalBytes)
+  return Buffer.concat(chunks)
 }

@@ -86,3 +86,50 @@ export interface Profile {
   business: string | null
   created_at: string
 }
+
+export type SocialPlatform = 'meta' | 'instagram' | 'tiktok'
+
+export interface SocialConnection {
+  id: string
+  platform: SocialPlatform
+  business: string
+  account_id: string
+  account_name: string | null
+  token_expires_at: string | null
+  scopes: string[] | null
+  connected_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SocialCreative {
+  id: string
+  asset_id: string
+  connection_id: string
+  platform: SocialPlatform
+  platform_creative_id: string
+  platform_ad_id: string | null
+  platform_adset_id: string | null
+  platform_campaign_id: string | null
+  platform_campaign_name: string | null
+  creative_url: string | null
+  creative_metadata: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface SocialMetric {
+  id: string
+  creative_id: string
+  date: string
+  impressions: number
+  clicks: number
+  spend_cents: number
+  conversions: number
+  video_views: number
+  reach: number
+  engagement: number
+  ctr: number
+  cpm_cents: number
+  cpc_cents: number
+  fetched_at: string
+}
