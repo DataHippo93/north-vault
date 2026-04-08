@@ -67,7 +67,7 @@ export async function detectFaces(imageBuffer: Buffer): Promise<DetectedFace[]> 
       'Ocp-Apim-Subscription-Key': key,
       'Content-Type': 'application/octet-stream',
     },
-    body: processed,
+    body: new Uint8Array(processed),
   })
 
   if (res.status === 429) {

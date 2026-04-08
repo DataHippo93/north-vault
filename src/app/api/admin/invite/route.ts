@@ -1,11 +1,13 @@
-import { createServiceClient } from '@/lib/supabase/server'
 import { createClient } from '@/lib/supabase/server'
+import { createClient as createRawClient } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function POST(request: NextRequest) {
   // Verify caller is admin
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
 
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -28,12 +30,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Email is required' }, { status: 400 })
   }
 
-  // Use service role to send invite
-  const serviceClient = await createServiceClient()
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://north-vault.vercel.app'
+  // Use raw service client (not cookie-based) for admin auth operations
+  const serviceClient = createRawClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://northvault.adkfragrance.com'
 
   const { data, error } = await serviceClient.auth.admin.inviteUserByEmail(email, {
-    redirectTo: `${siteUrl}/auth/callback?type=invite`,
+    redirectTo: `${siteUrl}/auth/callback?next=/auth/set-password`,
     data: { role },
   })
 
@@ -43,14 +45,14 @@ export async function POST(request: NextRequest) {
 
   // Pre-create profile with correct role
   if (data.user) {
-    await serviceClient
-      .schema('northvault')
-      .from('profiles')
-      .upsert({
+    await serviceClient.schema('northvault').from('profiles').upsert(
+      {
         id: data.user.id,
         email,
         role,
-      }, { onConflict: 'id' })
+      },
+      { onConflict: 'id' },
+    )
   }
 
   return NextResponse.json({ success: true, userId: data.user?.id })
