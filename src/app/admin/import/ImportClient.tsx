@@ -1,5 +1,7 @@
 'use client'
 
+const BUILD_VERSION = '2026-04-08a'
+
 import { useState, useRef, useCallback } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
@@ -382,6 +384,7 @@ export default function ImportClient() {
           </svg>
         </Link>
         <h1 className="text-2xl font-bold text-stone-800">SharePoint Import</h1>
+        <span className="text-xs text-stone-400">v{BUILD_VERSION}</span>
         {isQueue && (
           <span className="rounded-full bg-[#e8f0e0] px-2.5 py-0.5 text-xs font-medium text-[#4a5a3f]">
             {urlQueue.length} folders queued
