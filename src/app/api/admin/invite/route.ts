@@ -31,29 +31,41 @@ export async function POST(request: NextRequest) {
   }
 
   // Use raw service client (not cookie-based) for admin auth operations
-  const serviceClient = createRawClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!supabaseUrl || !serviceKey) {
+    return NextResponse.json({ error: 'Server configuration error: missing Supabase credentials' }, { status: 500 })
+  }
+
+  const serviceClient = createRawClient(supabaseUrl, serviceKey)
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://northvault.adkfragrance.com'
 
-  const { data, error } = await serviceClient.auth.admin.inviteUserByEmail(email, {
-    redirectTo: `${siteUrl}/auth/callback?next=/auth/set-password`,
-    data: { role },
-  })
+  try {
+    const { data, error } = await serviceClient.auth.admin.inviteUserByEmail(email, {
+      redirectTo: `${siteUrl}/auth/callback?next=/auth/set-password`,
+      data: { role },
+    })
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 })
+    if (error) {
+      console.error('Invite error:', error)
+      return NextResponse.json({ error: error.message }, { status: 400 })
+    }
+
+    // Pre-create profile with correct role
+    if (data.user) {
+      await serviceClient.schema('northvault').from('profiles').upsert(
+        {
+          id: data.user.id,
+          email,
+          role,
+        },
+        { onConflict: 'id' },
+      )
+    }
+
+    return NextResponse.json({ success: true, userId: data.user?.id })
+  } catch (err) {
+    console.error('Invite exception:', err)
+    return NextResponse.json({ error: err instanceof Error ? err.message : 'Unknown error' }, { status: 500 })
   }
-
-  // Pre-create profile with correct role
-  if (data.user) {
-    await serviceClient.schema('northvault').from('profiles').upsert(
-      {
-        id: data.user.id,
-        email,
-        role,
-      },
-      { onConflict: 'id' },
-    )
-  }
-
-  return NextResponse.json({ success: true, userId: data.user?.id })
 }

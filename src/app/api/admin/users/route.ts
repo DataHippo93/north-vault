@@ -26,17 +26,31 @@ export async function DELETE(request: NextRequest) {
   if (!userId) return NextResponse.json({ error: 'userId required' }, { status: 400 })
   if (userId === user.id) return NextResponse.json({ error: 'Cannot delete your own account' }, { status: 400 })
 
-  // Use raw service client (not cookie-based) for admin operations
-  const serviceClient = createRawClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!supabaseUrl || !serviceKey) {
+    return NextResponse.json({ error: 'Server configuration error' }, { status: 500 })
+  }
 
-  // Delete profile first (service role bypasses RLS)
-  await serviceClient.schema('northvault').from('profiles').delete().eq('id', userId)
+  try {
+    const serviceClient = createRawClient(supabaseUrl, serviceKey)
 
-  // Delete from auth.users
-  const { error } = await serviceClient.auth.admin.deleteUser(userId)
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+    // Delete profile first (service role bypasses RLS)
+    const { error: profileError } = await serviceClient.schema('northvault').from('profiles').delete().eq('id', userId)
+    if (profileError) console.error('Profile delete error:', profileError)
 
-  return NextResponse.json({ success: true })
+    // Delete from auth.users
+    const { error } = await serviceClient.auth.admin.deleteUser(userId)
+    if (error) {
+      console.error('Auth delete error:', error)
+      return NextResponse.json({ error: error.message }, { status: 400 })
+    }
+
+    return NextResponse.json({ success: true })
+  } catch (err) {
+    console.error('Delete exception:', err)
+    return NextResponse.json({ error: err instanceof Error ? err.message : 'Unknown error' }, { status: 500 })
+  }
 }
 
 export async function PATCH(request: NextRequest) {
