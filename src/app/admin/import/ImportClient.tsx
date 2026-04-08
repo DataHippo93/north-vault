@@ -1,11 +1,22 @@
 'use client'
 
-const BUILD_VERSION = '2026-04-08b'
+const BUILD_VERSION = '2026-04-08c'
 
 import { useState, useRef, useCallback } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import { createClient } from '@/lib/supabase/client'
 import type { BusinessEntity } from '@/types'
+
+interface LargeFileJob {
+  name: string
+  displayName: string
+  downloadUrl: string
+  mimeType: string
+  size: number
+  folderPath: string
+  lastModified: string | null
+}
 
 interface FileResult {
   name: string
@@ -75,6 +86,69 @@ export default function ImportClient() {
       }
     } catch {
       // Wake Lock not supported or denied — import will still work, just might be interrupted
+    }
+  }
+
+  /** Queue of large files that need client-side download + upload */
+  const largeFileQueueRef = useRef<LargeFileJob[]>([])
+
+  /** Process a large file: download from SharePoint → upload to Supabase Storage → register in DB */
+  async function processLargeFile(job: LargeFileJob, biz: string) {
+    const supabase = createClient()
+    const sizeMB = Math.round(job.size / 1024 / 1024)
+
+    setCurrentFile(job.displayName)
+    setCurrentPhaseLabel(`downloading locally (${sizeMB} MB)`)
+
+    try {
+      // Download from SharePoint (pre-authenticated URL, works from browser)
+      const dlRes = await fetch(job.downloadUrl)
+      if (!dlRes.ok) throw new Error(`Download failed: ${dlRes.status}`)
+      const blob = await dlRes.blob()
+
+      setCurrentPhaseLabel(`uploading to storage (${sizeMB} MB)`)
+
+      // Upload to Supabase Storage
+      const ext = job.name.split('.').pop() ?? ''
+      const storagePath = `import/${Date.now()}-${Math.random().toString(36).slice(2)}${ext ? `.${ext}` : ''}`
+
+      const { error: storageError } = await supabase.storage.from('northvault-assets').upload(storagePath, blob, {
+        contentType: job.mimeType,
+        upsert: false,
+      })
+
+      if (storageError) throw new Error(`Storage upload failed: ${storageError.message}`)
+
+      setCurrentPhaseLabel('registering asset')
+
+      // Register in DB via lightweight API
+      const regRes = await fetch('/api/import/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: job.name,
+          storagePath,
+          fileSize: job.size,
+          mimeType: job.mimeType,
+          business: biz,
+          folderPath: job.folderPath,
+          lastModified: job.lastModified,
+        }),
+      })
+
+      const result = await regRes.json()
+
+      if (result.status === 'duplicate') {
+        processedFilesRef.current.add(job.displayName)
+        setFiles((prev) => [...prev, { name: job.displayName, status: 'duplicate', duplicateOf: result.duplicateOf }])
+      } else if (result.status === 'uploaded') {
+        processedFilesRef.current.add(job.displayName)
+        setFiles((prev) => [...prev, { name: job.displayName, status: 'uploaded' }])
+      } else {
+        setFiles((prev) => [...prev, { name: job.displayName, status: 'error', error: result.error }])
+      }
+    } catch (err) {
+      setFiles((prev) => [...prev, { name: job.displayName, status: 'error', error: (err as Error).message }])
     }
   }
 
@@ -180,6 +254,18 @@ export default function ImportClient() {
                   ])
                   break
                 }
+                case 'client-upload':
+                  // Large file — queue for client-side download + upload after SSE completes
+                  largeFileQueueRef.current.push(data as LargeFileJob)
+                  setFiles((prev) => [
+                    ...prev,
+                    {
+                      name: data.displayName as string,
+                      status: 'retrying' as const,
+                      error: `Large file (${Math.round((data.size as number) / 1024 / 1024)} MB) — queued for direct upload`,
+                    },
+                  ])
+                  break
                 case 'retry':
                   setRetryInfo(data as RetryInfo)
                   // Mark retrying files in the file list
@@ -295,6 +381,7 @@ export default function ImportClient() {
     if (!isResume) {
       processedFilesRef.current.clear()
       reconnectCountRef.current = 0
+      largeFileQueueRef.current = []
       setFiles([])
       setCounts({ processed: 0, total: 0 })
       setQueueSummaries([])
@@ -350,6 +437,17 @@ export default function ImportClient() {
           ])
           // Small pause before next folder
           await new Promise((r) => setTimeout(r, 800))
+        }
+      }
+
+      // Process any large files that were queued for client-side upload
+      const largeFiles = largeFileQueueRef.current.splice(0)
+      if (largeFiles.length > 0) {
+        setStatusMessage(`Uploading ${largeFiles.length} large file${largeFiles.length > 1 ? 's' : ''} directly...`)
+        for (let i = 0; i < largeFiles.length; i++) {
+          if (controller.signal.aborted) break
+          setStatusMessage(`Large file ${i + 1}/${largeFiles.length}: ${largeFiles[i].name}`)
+          await processLargeFile(largeFiles[i], business)
         }
       }
 

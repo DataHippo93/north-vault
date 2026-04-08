@@ -287,13 +287,12 @@ export async function POST(request: NextRequest) {
       }
 
       const DEFAULT_CONCURRENCY = 2 // keep low to avoid Graph API rate limits
-      const LARGE_FILE_CONCURRENCY = 1 // process large files one at a time to limit memory
       let processed = 0
       let enumerated = 0
 
       // Concurrent upload pool — files start uploading as soon as enumerated
       const activePool = new Set<Promise<void>>()
-      let currentConcurrency = DEFAULT_CONCURRENCY
+      const currentConcurrency = DEFAULT_CONCURRENCY
 
       function enqueue(item: FileToProcess) {
         const task = processFile(item)
@@ -453,16 +452,29 @@ export async function POST(request: NextRequest) {
               enqueue(item)
             }
           } else {
-            // Non-zip file: download with progress heartbeats, then queue for upload
+            // Non-zip file
             const isLarge = spFile.size > LARGE_FILE_BYTES
+            const spDisplayPath = spFile.path ? `${spFile.path}/${spFile.name}` : spFile.name
 
-            // Lower concurrency when hitting large files so we don't OOM
             if (isLarge) {
-              currentConcurrency = LARGE_FILE_CONCURRENCY
-              // Drain existing pool before starting the large download
-              await drainPool()
+              // Large files: delegate to client-side download+upload to avoid server timeout
+              enumerated++
+              results.total++
+              send('client-upload', {
+                name: spFile.name,
+                displayName: spDisplayPath,
+                downloadUrl: spFile.downloadUrl,
+                mimeType: spFile.mimeType,
+                size: spFile.size,
+                folderPath: spFile.path,
+                lastModified: spFile.lastModified,
+              })
+              // Don't count as processed — client will report back
+              send('counts', { processed, total: enumerated })
+              continue
             }
 
+            // Small/medium files: server-side download + upload
             let buffer: Buffer
             try {
               const sizeMB = Math.round(spFile.size / 1024 / 1024)
@@ -497,7 +509,6 @@ export async function POST(request: NextRequest) {
                 },
                 error: errMsg,
               })
-              if (isLarge) currentConcurrency = DEFAULT_CONCURRENCY
               continue
             }
 
@@ -513,9 +524,6 @@ export async function POST(request: NextRequest) {
               folderPath: spFile.path,
               lastModified: spFile.lastModified,
             })
-
-            // Restore concurrency after large file is enqueued
-            if (isLarge) currentConcurrency = DEFAULT_CONCURRENCY
           }
         }
 
