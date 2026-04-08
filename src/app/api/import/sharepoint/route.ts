@@ -71,6 +71,7 @@ export async function POST(request: NextRequest) {
     enableAiTagging = true,
     dryRun = false,
     skipFiles = [],
+    skipCount = 0,
   } = body as {
     sharePointUrl: string
     business?: string
@@ -78,6 +79,8 @@ export async function POST(request: NextRequest) {
     dryRun?: boolean
     /** File names already processed in a prior connection — skip these on resume */
     skipFiles?: string[]
+    /** Number of enumerated files to skip before processing (offset) */
+    skipCount?: number
   }
 
   const skipSet = new Set(skipFiles)
@@ -318,8 +321,15 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      let fileIndex = 0
+
       try {
-        send('status', { message: 'Enumerating SharePoint files...' })
+        send('status', {
+          message:
+            skipCount > 0
+              ? `Enumerating SharePoint files (skipping first ${skipCount})...`
+              : 'Enumerating SharePoint files...',
+        })
 
         for await (const spFile of enumerateFiles(
           parsed.hostname,
@@ -327,6 +337,16 @@ export async function POST(request: NextRequest) {
           parsed.folderPath,
           process.env.SHAREPOINT_ADK_DRIVE_ID,
         )) {
+          fileIndex++
+
+          // Skip the first N files if offset is set
+          if (fileIndex <= skipCount) {
+            if (fileIndex % 500 === 0 || fileIndex === skipCount) {
+              send('status', { message: `Skipping ${fileIndex}/${skipCount}...` })
+            }
+            continue
+          }
+
           send('progress', { current: spFile.name, phase: 'enumerate' })
 
           // Skip files already processed in a prior connection (resume support)

@@ -58,6 +58,7 @@ export default function ImportClient() {
   const [business, setBusiness] = useState<BusinessEntity>('both')
   const [aiTagging, setAiTagging] = useState(true)
   const [dryRun, setDryRun] = useState(false)
+  const [skipCount, setSkipCount] = useState(0)
 
   const [phase, setPhase] = useState<ImportPhase>('idle')
   const [statusMessage, setStatusMessage] = useState('')
@@ -181,6 +182,7 @@ export default function ImportClient() {
           enableAiTagging: aiTagging,
           dryRun,
           skipFiles: Array.from(processedFilesRef.current),
+          skipCount,
         }),
         signal: controller.signal,
       })
@@ -306,7 +308,7 @@ export default function ImportClient() {
 
       return outcome
     },
-    [business, aiTagging, dryRun],
+    [business, aiTagging, dryRun, skipCount],
   )
 
   /** Run import with auto-reconnect on connection drops */
@@ -586,6 +588,27 @@ export default function ImportClient() {
               </span>
               <span className="text-sm text-stone-600">Dry run (enumerate only, no uploads)</span>
             </label>
+          </div>
+        </div>
+
+        {/* Skip offset */}
+        <div>
+          <label className="mb-1 block text-sm font-medium text-stone-600">Skip first N files (offset)</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={0}
+              value={skipCount || ''}
+              onChange={(e) => setSkipCount(parseInt(e.target.value) || 0)}
+              disabled={isRunning}
+              placeholder="0"
+              className="w-32 rounded-lg border border-stone-300 px-3 py-2 text-sm focus:ring-2 focus:ring-[#6b7f5e] focus:outline-none disabled:bg-stone-50 disabled:text-stone-400"
+            />
+            <span className="text-xs text-stone-400">
+              {skipCount > 0
+                ? `Will skip ${skipCount.toLocaleString()} files, then start processing`
+                : 'Start from the beginning'}
+            </span>
           </div>
         </div>
 
