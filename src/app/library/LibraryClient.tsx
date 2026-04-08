@@ -91,15 +91,28 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
       query = query.overlaps('tags', filters.tags)
     }
 
-    query = query.order(sortBy, { ascending: sortDir === 'asc' }).limit(5000)
+    query = query.order(sortBy, { ascending: sortDir === 'asc' })
 
-    const { data, error } = await query
-    if (error) {
-      console.error('Asset query error:', error)
-      setQueryError(error.message)
-    } else if (data) {
-      setAssets(data as Asset[])
+    // Paginate to bypass Supabase's 1000-row default limit
+    const PAGE_SIZE = 1000
+    let allData: Asset[] = []
+    let from = 0
+    let keepGoing = true
+
+    while (keepGoing) {
+      const { data: page, error: pageError } = await query.range(from, from + PAGE_SIZE - 1)
+      if (pageError) {
+        console.error('Asset query error:', pageError)
+        setQueryError(pageError.message)
+        setLoading(false)
+        return
+      }
+      if (page) allData = allData.concat(page as Asset[])
+      if (!page || page.length < PAGE_SIZE) keepGoing = false
+      else from += PAGE_SIZE
     }
+
+    setAssets(allData)
     setLoading(false)
   }, [filters, sortBy, sortDir])
 
