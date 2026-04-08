@@ -35,6 +35,7 @@ export default function UploadClient({ userId }: Props) {
   const [spBrowseLoading, setSpBrowseLoading] = useState(false)
   const [spBrowseError, setSpBrowseError] = useState<string | null>(null)
   const [spSelectedFiles, setSpSelectedFiles] = useState<Set<number>>(new Set())
+  const [spSelectedFolders, setSpSelectedFolders] = useState<Set<number>>(new Set())
   const [spMode, setSpMode] = useState<'browse' | 'json'>('browse')
   // Folder navigation stack: each entry is { name, folderPath }
   const [spFolderStack, setSpFolderStack] = useState<Array<{ name: string; folderPath: string }>>([])
@@ -316,8 +317,8 @@ export default function UploadClient({ userId }: Props) {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Browse failed')
       setSpBrowseFiles(data.files || [])
-      // Use the API-returned folderPath so breadcrumb stays in sync with the
-      // actual location (important when the URL itself points to a subfolder).
+      setSpSelectedFiles(new Set())
+      setSpSelectedFolders(new Set())
       const resolvedPath: string = data.folderPath ?? folderPath
       setSpCurrentPath(resolvedPath)
       if (folderName !== undefined) {
@@ -494,20 +495,30 @@ export default function UploadClient({ userId }: Props) {
 
               {spBrowseFiles.length > 0 && (
                 <div className="space-y-2">
-                  <div className="flex items-center gap-3 text-sm text-stone-600">
-                    <span>{spBrowseFiles.filter((f) => !f.isFolder).length} files</span>
+                  <div className="flex flex-wrap items-center gap-3 text-sm text-stone-600">
+                    <span>
+                      {spBrowseFiles.filter((f) => f.isFolder).length} folders ·{' '}
+                      {spBrowseFiles.filter((f) => !f.isFolder).length} files
+                    </span>
                     <button
                       onClick={() => {
-                        const allFileIndexes = spBrowseFiles.map((f, i) => (!f.isFolder ? i : -1)).filter((i) => i >= 0)
-                        setSpSelectedFiles(new Set(allFileIndexes))
+                        setSpSelectedFiles(
+                          new Set(spBrowseFiles.map((f, i) => (!f.isFolder ? i : -1)).filter((i) => i >= 0)),
+                        )
+                        setSpSelectedFolders(
+                          new Set(spBrowseFiles.map((f, i) => (f.isFolder ? i : -1)).filter((i) => i >= 0)),
+                        )
                       }}
                       className="text-[#4a5a3f] underline hover:text-[#3d4b34]"
                     >
-                      Select all files
+                      Select all
                     </button>
-                    {spSelectedFiles.size > 0 && (
+                    {(spSelectedFiles.size > 0 || spSelectedFolders.size > 0) && (
                       <button
-                        onClick={() => setSpSelectedFiles(new Set())}
+                        onClick={() => {
+                          setSpSelectedFiles(new Set())
+                          setSpSelectedFolders(new Set())
+                        }}
                         className="text-stone-500 underline hover:text-stone-700"
                       >
                         Clear
@@ -517,10 +528,23 @@ export default function UploadClient({ userId }: Props) {
                   <div className="max-h-72 divide-y divide-stone-100 overflow-y-auto rounded-lg border border-stone-200">
                     {spBrowseFiles.map((file, idx) =>
                       file.isFolder ? (
-                        <div key={idx} className="flex w-full items-center gap-1 px-3 py-2 text-sm hover:bg-stone-50">
+                        <div key={idx} className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-stone-50">
+                          <input
+                            type="checkbox"
+                            checked={spSelectedFolders.has(idx)}
+                            onChange={() => {
+                              setSpSelectedFolders((prev) => {
+                                const next = new Set(prev)
+                                if (next.has(idx)) next.delete(idx)
+                                else next.add(idx)
+                                return next
+                              })
+                            }}
+                            className="cursor-pointer rounded border-stone-300 text-[#6b7f5e] focus:ring-[#6b7f5e]"
+                          />
                           <button
                             onClick={() => handleSpEnterFolder(file.name)}
-                            className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
                           >
                             <span className="text-base">📁</span>
                             <span className="flex-1 truncate font-medium text-stone-700">{file.name}</span>
@@ -533,15 +557,6 @@ export default function UploadClient({ userId }: Props) {
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                             </svg>
                           </button>
-                          {file.webUrl && (
-                            <button
-                              onClick={() => router.push(`/admin/import?url=${encodeURIComponent(file.webUrl)}`)}
-                              title="Import this folder recursively"
-                              className="ml-1 shrink-0 rounded px-2 py-1 text-xs font-medium text-[#4a5a3f] hover:bg-[#f0f4ec]"
-                            >
-                              Import all
-                            </button>
-                          )}
                         </div>
                       ) : (
                         <label
@@ -568,14 +583,38 @@ export default function UploadClient({ userId }: Props) {
                       ),
                     )}
                   </div>
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={handleImportSelectedSharePointFiles}
-                      disabled={bulkImporting || spSelectedFiles.size === 0}
-                      className="rounded-lg bg-[#4a5a3f] px-4 py-2 text-sm font-medium text-white hover:bg-[#3d4b34] disabled:opacity-50"
-                    >
-                      {bulkImporting ? 'Importing…' : `Import ${spSelectedFiles.size} selected`}
-                    </button>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {spSelectedFiles.size > 0 && (
+                      <button
+                        onClick={handleImportSelectedSharePointFiles}
+                        disabled={bulkImporting}
+                        className="rounded-lg bg-[#4a5a3f] px-4 py-2 text-sm font-medium text-white hover:bg-[#3d4b34] disabled:opacity-50"
+                      >
+                        {bulkImporting
+                          ? 'Importing…'
+                          : `Import ${spSelectedFiles.size} file${spSelectedFiles.size !== 1 ? 's' : ''}`}
+                      </button>
+                    )}
+                    {spSelectedFolders.size > 0 && (
+                      <button
+                        onClick={() => {
+                          const selectedFolderItems = spBrowseFiles.filter((_, i) => spSelectedFolders.has(i))
+                          const params = new URLSearchParams()
+                          for (const folder of selectedFolderItems) {
+                            if (folder.webUrl) {
+                              params.append('url', folder.webUrl)
+                            } else {
+                              const folderPath = spCurrentPath ? `${spCurrentPath}/${folder.name}` : folder.name
+                              params.append('folderPath', folderPath)
+                            }
+                          }
+                          router.push(`/admin/import?${params.toString()}`)
+                        }}
+                        className="rounded-lg border border-[#4a5a3f] px-4 py-2 text-sm font-medium text-[#4a5a3f] hover:bg-[#f0f4ec]"
+                      >
+                        Import {spSelectedFolders.size} folder{spSelectedFolders.size !== 1 ? 's' : ''} (recursive)
+                      </button>
+                    )}
                     {bulkImportStatus && <span className="text-sm text-stone-600">{bulkImportStatus}</span>}
                   </div>
                 </div>

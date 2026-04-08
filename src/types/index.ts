@@ -22,6 +22,7 @@ export interface Asset {
   extracted_text: string[] | null
   barcodes: string[] | null
   exif_data: Record<string, unknown> | null
+  faces_scanned?: boolean
 }
 
 export interface UploadFile {
@@ -52,6 +53,29 @@ export interface Collection {
   business: string | null
   created_at: string
   created_by: string | null
+}
+
+export interface Person {
+  id: string
+  name: string | null
+  representative_face_id: string | null
+  face_count: number
+  created_at: string
+  updated_at: string
+  /** Joined for display */
+  crop_url?: string
+}
+
+export interface Face {
+  id: string
+  asset_id: string
+  person_id: string | null
+  box_x: number
+  box_y: number
+  box_width: number
+  box_height: number
+  confidence: number
+  crop_path: string | null
 }
 
 export interface Profile {

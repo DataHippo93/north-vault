@@ -49,3 +49,9 @@ next-env.d.ts
 
 # scratch / inspection files
 /inspect_me/
+
+# face-api model weights (downloaded at build time)
+/public/models/
+
+# face-api model weights (downloaded at build time)
+/public/models/

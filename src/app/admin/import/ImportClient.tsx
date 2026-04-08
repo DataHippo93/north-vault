@@ -7,17 +7,41 @@ import type { BusinessEntity } from '@/types'
 
 interface FileResult {
   name: string
-  status: 'uploaded' | 'duplicate' | 'error' | 'dry-run'
+  status: 'uploaded' | 'duplicate' | 'error' | 'dry-run' | 'retrying'
   tags?: string[]
   duplicateOf?: string
   error?: string
 }
 
+interface RetryInfo {
+  attempt: number
+  maxAttempts: number
+  count: number
+  files: string[]
+  permanent?: boolean
+}
+
 type ImportPhase = 'idle' | 'running' | 'complete' | 'error'
+
+interface QueueSummary {
+  url: string
+  label: string
+  total: number
+  uploaded: number
+  duplicates: number
+  errors: number
+}
 
 export default function ImportClient() {
   const searchParams = useSearchParams()
-  const [sharePointUrl, setSharePointUrl] = useState(searchParams.get('url') ?? '')
+
+  // Build a queue from all ?url= and ?folderPath= params
+  const initialQueue: string[] = [...searchParams.getAll('url'), ...searchParams.getAll('folderPath')]
+  const [sharePointUrl, setSharePointUrl] = useState(initialQueue[0] ?? '')
+  const [urlQueue] = useState<string[]>(initialQueue.length > 1 ? initialQueue : [])
+  const [queueIndex, setQueueIndex] = useState(0)
+  const [queueSummaries, setQueueSummaries] = useState<QueueSummary[]>([])
+
   const [business, setBusiness] = useState<BusinessEntity>('both')
   const [aiTagging, setAiTagging] = useState(true)
   const [dryRun, setDryRun] = useState(false)
@@ -32,31 +56,27 @@ export default function ImportClient() {
     uploaded: number
     duplicates: number
     errors: number
+    retried?: number
   } | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
+  const [retryInfo, setRetryInfo] = useState<RetryInfo | null>(null)
+  const [counts, setCounts] = useState<{ processed: number; total: number }>({ processed: 0, total: 0 })
 
   const abortRef = useRef<AbortController | null>(null)
 
-  const startImport = useCallback(async () => {
-    if (!sharePointUrl.trim()) return
-
-    setPhase('running')
-    setFiles([])
-    setSummary(null)
-    setErrorMessage('')
-    setStatusMessage('Connecting...')
-    setCurrentFile('')
-    setCurrentPhaseLabel('')
-
-    const controller = new AbortController()
-    abortRef.current = controller
-
-    try {
+  const runImport = useCallback(
+    async (
+      url: string,
+      controller: AbortController,
+    ): Promise<
+      | { status: 'complete'; total: number; uploaded: number; duplicates: number; errors: number; retried?: number }
+      | { status: 'error' }
+    > => {
       const res = await fetch('/api/import/sharepoint', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sharePointUrl: sharePointUrl.trim(),
+          sharePointUrl: url.trim(),
           business,
           enableAiTagging: aiTagging,
           dryRun,
@@ -67,19 +87,20 @@ export default function ImportClient() {
       if (!res.ok) {
         const data = await res.json()
         setErrorMessage(data.error || `Server error ${res.status}`)
-        setPhase('error')
-        return
+        return { status: 'error' }
       }
 
       const reader = res.body?.getReader()
       if (!reader) {
         setErrorMessage('No response stream')
-        setPhase('error')
-        return
+        return { status: 'error' }
       }
 
       const decoder = new TextDecoder()
       let buffer = ''
+      let outcome:
+        | { status: 'complete'; total: number; uploaded: number; duplicates: number; errors: number }
+        | { status: 'error' } = { status: 'error' }
 
       while (true) {
         const { done, value } = await reader.read()
@@ -104,6 +125,9 @@ export default function ImportClient() {
                   setCurrentFile(data.current as string)
                   setCurrentPhaseLabel(data.phase as string)
                   break
+                case 'counts':
+                  setCounts({ processed: data.processed as number, total: data.total as number })
+                  break
                 case 'file':
                   setFiles((prev) => [
                     ...prev,
@@ -116,18 +140,34 @@ export default function ImportClient() {
                     },
                   ])
                   break
-                case 'complete':
-                  setSummary({
+                case 'retry':
+                  setRetryInfo(data as RetryInfo)
+                  // Mark retrying files in the file list
+                  if (!data.permanent) {
+                    for (const name of (data as RetryInfo).files) {
+                      setFiles((prev) =>
+                        prev.map((f) =>
+                          f.name.endsWith(name) && f.status === 'error' ? { ...f, status: 'retrying' as const } : f,
+                        ),
+                      )
+                    }
+                  }
+                  break
+                case 'complete': {
+                  const s = {
+                    status: 'complete' as const,
                     total: data.total as number,
                     uploaded: data.uploaded as number,
                     duplicates: data.duplicates as number,
                     errors: data.errors as number,
-                  })
-                  setPhase('complete')
-                  break
+                    retried: (data.retried as number) ?? 0,
+                  }
+                  setSummary(s)
+                  return s
+                }
                 case 'error':
                   setErrorMessage(data.message as string)
-                  setPhase('error')
+                  outcome = { status: 'error' }
                   break
               }
             } catch {
@@ -138,9 +178,67 @@ export default function ImportClient() {
         }
       }
 
-      if (phase !== 'error') {
-        setPhase('complete')
+      return outcome
+    },
+    [business, aiTagging, dryRun],
+  )
+
+  const startImport = useCallback(async () => {
+    const targetUrl = urlQueue.length > 0 ? urlQueue[0] : sharePointUrl
+    if (!targetUrl.trim()) return
+
+    const queue = urlQueue.length > 0 ? urlQueue : [sharePointUrl]
+
+    setPhase('running')
+    setFiles([])
+    setSummary(null)
+    setErrorMessage('')
+    setRetryInfo(null)
+    setCounts({ processed: 0, total: 0 })
+    setQueueSummaries([])
+    setStatusMessage('Connecting...')
+    setCurrentFile('')
+    setCurrentPhaseLabel('')
+
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    try {
+      for (let i = 0; i < queue.length; i++) {
+        setQueueIndex(i)
+        if (queue.length > 1) {
+          setStatusMessage(`Folder ${i + 1} of ${queue.length}: connecting...`)
+          setFiles([])
+          setSummary(null)
+        }
+
+        const result = await runImport(queue[i], controller)
+
+        if (result.status === 'error') {
+          setPhase('error')
+          return
+        }
+
+        // Capture per-folder summary before we reset for next folder
+        if (queue.length > 1) {
+          const label = queue[i].split('/').filter(Boolean).pop() ?? queue[i]
+          setQueueSummaries((s) => [
+            ...s,
+            {
+              url: queue[i],
+              label,
+              total: result.total,
+              uploaded: result.uploaded,
+              duplicates: result.duplicates,
+              errors: result.errors,
+            },
+          ])
+          // Small pause before next folder
+          await new Promise((r) => setTimeout(r, 800))
+        }
       }
+
+      setPhase('complete')
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
         setStatusMessage('Import cancelled')
@@ -150,13 +248,14 @@ export default function ImportClient() {
         setPhase('error')
       }
     }
-  }, [sharePointUrl, business, aiTagging, dryRun])
+  }, [sharePointUrl, urlQueue, business, aiTagging, dryRun, runImport])
 
   function handleCancel() {
     abortRef.current?.abort()
   }
 
   const isRunning = phase === 'running'
+  const isQueue = urlQueue.length > 1
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -168,22 +267,66 @@ export default function ImportClient() {
           </svg>
         </Link>
         <h1 className="text-2xl font-bold text-stone-800">SharePoint Import</h1>
+        {isQueue && (
+          <span className="rounded-full bg-[#e8f0e0] px-2.5 py-0.5 text-xs font-medium text-[#4a5a3f]">
+            {urlQueue.length} folders queued
+          </span>
+        )}
       </div>
+
+      {/* Queue list */}
+      {isQueue && (
+        <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+          <p className="mb-2 text-xs font-medium tracking-wide text-stone-400 uppercase">Import queue</p>
+          <ol className="space-y-1">
+            {urlQueue.map((u, i) => {
+              const label = u.split('/').filter(Boolean).pop() ?? u
+              const done = queueSummaries.find((s) => s.url === u)
+              const isCurrent = isRunning && i === queueIndex
+              return (
+                <li key={i} className="flex items-center gap-2 text-sm">
+                  <span
+                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                      done
+                        ? 'bg-[#4a5a3f] text-white'
+                        : isCurrent
+                          ? 'animate-pulse bg-amber-400 text-white'
+                          : 'bg-stone-200 text-stone-500'
+                    }`}
+                  >
+                    {done ? '✓' : i + 1}
+                  </span>
+                  <span className={`truncate ${isCurrent ? 'font-medium text-stone-800' : 'text-stone-600'}`}>
+                    {label}
+                  </span>
+                  {done && (
+                    <span className="ml-auto shrink-0 text-xs text-stone-400">
+                      {done.uploaded} uploaded · {done.duplicates} dupes · {done.errors} errors
+                    </span>
+                  )}
+                </li>
+              )
+            })}
+          </ol>
+        </div>
+      )}
 
       {/* Settings card */}
       <div className="space-y-5 rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
-        {/* SharePoint URL */}
-        <div>
-          <label className="mb-1 block text-sm font-medium text-stone-600">SharePoint folder URL</label>
-          <input
-            type="url"
-            value={sharePointUrl}
-            onChange={(e) => setSharePointUrl(e.target.value)}
-            disabled={isRunning}
-            placeholder="https://yourtenant.sharepoint.com/sites/Brand/Shared Documents/Assets"
-            className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:ring-2 focus:ring-[#6b7f5e] focus:outline-none disabled:bg-stone-50 disabled:text-stone-400"
-          />
-        </div>
+        {/* SharePoint URL — only shown for single-folder mode */}
+        {!isQueue && (
+          <div>
+            <label className="mb-1 block text-sm font-medium text-stone-600">SharePoint folder URL</label>
+            <input
+              type="url"
+              value={sharePointUrl}
+              onChange={(e) => setSharePointUrl(e.target.value)}
+              disabled={isRunning}
+              placeholder="https://yourtenant.sharepoint.com/sites/Brand/Shared Documents/Assets"
+              className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:ring-2 focus:ring-[#6b7f5e] focus:outline-none disabled:bg-stone-50 disabled:text-stone-400"
+            />
+          </div>
+        )}
 
         {/* Business + toggles */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -235,7 +378,7 @@ export default function ImportClient() {
           {!isRunning ? (
             <button
               onClick={startImport}
-              disabled={!sharePointUrl.trim()}
+              disabled={!isQueue && !sharePointUrl.trim()}
               className="rounded-lg bg-[#4a5a3f] px-6 py-2 text-sm font-medium text-white transition-colors hover:bg-[#3d4b34] disabled:opacity-50"
             >
               {dryRun ? 'Start dry run' : 'Start import'}
@@ -249,10 +392,25 @@ export default function ImportClient() {
             </button>
           )}
           {isRunning && (
-            <span className="flex items-center gap-2 text-sm text-stone-500">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-[#6b7f5e]" />
-              {currentPhaseLabel ? `${currentPhaseLabel}: ${currentFile}` : statusMessage}
-            </span>
+            <div className="flex flex-col gap-1">
+              <span className="flex items-center gap-2 text-sm text-stone-500">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-[#6b7f5e]" />
+                {currentPhaseLabel ? `${currentPhaseLabel}: ${currentFile}` : statusMessage}
+              </span>
+              {counts.total > 0 && (
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-stone-200">
+                    <div
+                      className="h-full rounded-full bg-[#6b7f5e] transition-all duration-300"
+                      style={{ width: `${Math.round((counts.processed / counts.total) * 100)}%` }}
+                    />
+                  </div>
+                  <span className="shrink-0 text-xs font-medium text-stone-500">
+                    {counts.processed} / {counts.total}
+                  </span>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -265,15 +423,36 @@ export default function ImportClient() {
         </div>
       )}
 
+      {/* Retry banner */}
+      {retryInfo && !retryInfo.permanent && phase === 'running' && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-6 py-4">
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+            <p className="text-sm font-medium text-amber-700">
+              Retrying {retryInfo.count} failed file{retryInfo.count !== 1 ? 's' : ''} (attempt {retryInfo.attempt}/
+              {retryInfo.maxAttempts})
+            </p>
+          </div>
+          <ul className="mt-2 space-y-0.5">
+            {retryInfo.files.map((name) => (
+              <li key={name} className="truncate text-xs text-amber-600">
+                {name}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Summary card */}
       {summary && (
         <div className="rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
           <h2 className="mb-4 text-base font-semibold text-stone-800">Import complete</h2>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className={`grid grid-cols-2 gap-4 ${summary.retried ? 'sm:grid-cols-5' : 'sm:grid-cols-4'}`}>
             <SummaryStat label="Total files" value={summary.total} color="text-stone-800" />
             <SummaryStat label="Uploaded" value={summary.uploaded} color="text-[#4a5a3f]" />
             <SummaryStat label="Duplicates" value={summary.duplicates} color="text-amber-600" />
             <SummaryStat label="Errors" value={summary.errors} color="text-red-600" />
+            {summary.retried ? <SummaryStat label="Recovered" value={summary.retried} color="text-blue-600" /> : null}
           </div>
         </div>
       )}
@@ -327,6 +506,7 @@ function FileStatusBadge({ status }: { status: FileResult['status'] }) {
     uploaded: { label: 'Uploaded', className: 'bg-[#e8f0e0] text-[#4a5a3f]' },
     duplicate: { label: 'Duplicate', className: 'bg-amber-100 text-amber-700' },
     error: { label: 'Error', className: 'bg-red-100 text-red-700' },
+    retrying: { label: 'Retrying...', className: 'bg-amber-50 text-amber-600 animate-pulse' },
     'dry-run': { label: 'Dry run', className: 'bg-blue-50 text-blue-700' },
   }
   const { label, className } = map[status]

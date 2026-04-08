@@ -23,6 +23,7 @@ export default function AppShell({ children, userEmail, userRole }: AppShellProp
 
   const navLinks = [
     { href: '/library', label: 'Library' },
+    { href: '/people', label: 'People' },
     { href: '/upload', label: 'Upload' },
     { href: '/pr', label: 'PR & Media' },
     { href: '/admin', label: 'Admin', adminOnly: true },

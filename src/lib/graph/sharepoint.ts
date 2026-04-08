@@ -12,6 +12,7 @@ export interface SharePointFile {
   mimeType: string
   downloadUrl: string
   lastModified: string
+  /** Relative path from the drive root, e.g. "/Content Marketing/Spring 2024" */
   path: string
 }
 
@@ -40,16 +41,13 @@ export function parseSharePointUrl(url: string): {
   const u = new URL(url)
   const hostname = u.hostname
 
-  // Extract site path (e.g., /sites/adkfragrancefarm)
   const pathMatch = u.pathname.match(/^(\/sites\/[^/]+)/)
   if (!pathMatch) {
     throw new Error('Could not parse SharePoint site from URL. Expected /sites/<name> in path.')
   }
   const sitePath = pathMatch[1]
 
-  // AllItems.aspx view URLs encode the folder in the `id` query param:
-  // ?id=%2Fsites%2Fadkfragrancefarm%2FShared%20Documents%2FContent%20Marketing
-  // Try that first, then fall back to extracting from the pathname.
+  // AllItems.aspx view URLs encode the folder in the `id` query param
   let folderPath: string | null = null
 
   const idParam = u.searchParams.get('id')
@@ -77,10 +75,13 @@ export function parseSharePointUrl(url: string): {
 }
 
 /**
- * Get the drive ID for a SharePoint site's default document library.
+ * Resolve a drive ID. Prefers the explicit override, then the env var,
+ * then falls back to querying the site's document libraries.
  */
-async function getDriveId(hostname: string, sitePath: string): Promise<string> {
-  // First get the site ID
+async function resolveDriveId(hostname: string, sitePath: string, driveIdOverride?: string): Promise<string> {
+  if (driveIdOverride) return driveIdOverride
+  if (process.env.SHAREPOINT_ADK_DRIVE_ID) return process.env.SHAREPOINT_ADK_DRIVE_ID
+
   const siteRes = await graphFetch(`/sites/${hostname}:${sitePath}`)
   if (!siteRes.ok) {
     const err = await siteRes.text()
@@ -88,7 +89,6 @@ async function getDriveId(hostname: string, sitePath: string): Promise<string> {
   }
   const site = await siteRes.json()
 
-  // Get the default drive (Shared Documents)
   const drivesRes = await graphFetch(`/sites/${site.id}/drives`)
   if (!drivesRes.ok) {
     const err = await drivesRes.text()
@@ -96,31 +96,39 @@ async function getDriveId(hostname: string, sitePath: string): Promise<string> {
   }
   const drives = await drivesRes.json()
 
-  // Find "Documents" or "Shared Documents" drive
   const drive =
     drives.value.find((d: { name: string }) => d.name === 'Documents' || d.name === 'Shared Documents') ||
     drives.value[0]
 
-  if (!drive) {
-    throw new Error('No document library found on this site')
-  }
-
+  if (!drive) throw new Error('No document library found on this site')
   return drive.id
 }
 
 /**
+ * Encode a folder path for use in a Graph API URL.
+ * Each segment is encoded individually so slashes are preserved.
+ */
+function encodeFolderPath(folderPath: string): string {
+  return folderPath
+    .split('/')
+    .map((s) => encodeURIComponent(s))
+    .join('/')
+}
+
+/**
  * Recursively enumerate all files in a SharePoint folder.
+ * @param driveIdOverride - optional explicit drive ID (skips site lookup)
  */
 export async function* enumerateFiles(
   hostname: string,
   sitePath: string,
   folderPath: string | null,
+  driveIdOverride?: string,
 ): AsyncGenerator<SharePointFile> {
-  const driveId = await getDriveId(hostname, sitePath)
+  const driveId = await resolveDriveId(hostname, sitePath, driveIdOverride)
 
-  // Build the initial path
   const basePath = folderPath
-    ? `/drives/${driveId}/root:/${encodeURIComponent(folderPath)}:/children`
+    ? `/drives/${driveId}/root:/${encodeFolderPath(folderPath)}:/children`
     : `/drives/${driveId}/root/children`
 
   yield* enumerateFolder(driveId, basePath)
@@ -130,8 +138,8 @@ async function* enumerateFolder(driveId: string, path: string): AsyncGenerator<S
   let nextUrl: string | null = path
 
   while (nextUrl) {
-    const isFullUrl: boolean = nextUrl.startsWith('http')
-    const res: Response | null = isFullUrl
+    const isFullUrl = nextUrl.startsWith('http')
+    const res = isFullUrl
       ? await fetch(nextUrl, {
           headers: { Authorization: `Bearer ${await getGraphToken()}` },
         }).catch(() => null)
@@ -144,35 +152,34 @@ async function* enumerateFolder(driveId: string, path: string): AsyncGenerator<S
 
     for (const item of items) {
       if (item.folder) {
-        // Recurse into subfolders
         const subPath = `/drives/${driveId}/items/${item.id}/children`
         yield* enumerateFolder(driveId, subPath)
       } else if (item.file && item['@microsoft.graph.downloadUrl']) {
+        // Extract the relative path portion after the drive root
+        const rawRef = item.parentReference?.path ?? ''
+        // rawRef looks like "/drives/{id}/root:/Content Marketing/Sub" — strip the drive root prefix
+        const pathAfterRoot = decodeURIComponent(rawRef.replace(/^.*?root:/, '').replace(/^\//, ''))
         yield {
           id: item.id,
           name: item.name,
-          size: item.size || 0,
+          size: item.size ?? 0,
           mimeType: item.file.mimeType,
           downloadUrl: item['@microsoft.graph.downloadUrl'],
           lastModified: item.lastModifiedDateTime,
-          path: item.parentReference?.path ? decodeURIComponent(item.parentReference.path.replace(/^.*:/, '')) : '',
+          path: pathAfterRoot,
         }
       }
     }
 
-    nextUrl = data['@odata.nextLink'] || null
+    nextUrl = data['@odata.nextLink'] ?? null
   }
 }
 
 /**
  * Download a file from SharePoint by its download URL.
- * Returns the file as a Buffer.
  */
 export async function downloadFile(downloadUrl: string): Promise<Buffer> {
   const res = await fetch(downloadUrl)
-  if (!res.ok) {
-    throw new Error(`Failed to download file: ${res.status}`)
-  }
-  const arrayBuffer = await res.arrayBuffer()
-  return Buffer.from(arrayBuffer)
+  if (!res.ok) throw new Error(`Failed to download file: ${res.status}`)
+  return Buffer.from(await res.arrayBuffer())
 }

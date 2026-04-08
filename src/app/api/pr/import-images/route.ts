@@ -231,7 +231,10 @@ Return ONLY valid JSON. Example: {"tags":["product","natural","white background"
   if (imported > 0 && prId) {
     try {
       const { createClient: createSupabaseClient } = await import('@supabase/supabase-js')
-      const lobster = createSupabaseClient(process.env.LOBSTER_SUPABASE_URL!, process.env.LOBSTER_SUPABASE_SERVICE_KEY!)
+      const lobster = createSupabaseClient(
+        process.env.LOBSTER_SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.LOBSTER_SUPABASE_SERVICE_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      )
       await lobster
         .from('pr_media')
         .update({ file_path: `imported:${imported}` })

@@ -34,17 +34,42 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
   const [bulkTagging, setBulkTagging] = useState(false)
   const [bulkTagProgress, setBulkTagProgress] = useState<{ done: number; total: number } | null>(null)
   const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [queryError, setQueryError] = useState<string | null>(null)
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
-    let query = supabase.schema('northvault').from('assets').select('*')
+    setQueryError(null)
 
+    // Use the search_assets RPC when a text query is present — it supports
+    // partial matching inside the tags array (e.g. "loon" matches "black loon").
     if (filters.query) {
-      // Cast array columns to text so partial barcode/extracted-text search works
-      query = query.or(
-        `file_name.ilike.%${filters.query}%,original_filename.ilike.%${filters.query}%,notes.ilike.%${filters.query}%,barcodes::text.ilike.%${filters.query}%,extracted_text::text.ilike.%${filters.query}%`,
-      )
+      const { data, error } = await supabase.schema('northvault').rpc('search_assets', {
+        search_term: filters.query,
+        p_business: filters.businessEntity !== 'all' ? filters.businessEntity : null,
+        p_content_types: filters.contentTypes.length > 0 ? filters.contentTypes : null,
+        p_tags: filters.tags.length > 0 ? filters.tags : null,
+        p_date_from: filters.dateFrom || null,
+        p_date_to: filters.dateTo ? filters.dateTo + 'T23:59:59Z' : null,
+      })
+      if (error) {
+        console.error('Search RPC error:', error)
+        setQueryError(error.message)
+      } else if (data) {
+        const sorted = [...(data as Asset[])].sort((a, b) => {
+          const av = a[sortBy as keyof Asset] as string | number | null
+          const bv = b[sortBy as keyof Asset] as string | number | null
+          if (av === null || av === undefined) return 1
+          if (bv === null || bv === undefined) return -1
+          return sortDir === 'asc' ? (av < bv ? -1 : 1) : av > bv ? -1 : 1
+        })
+        setAssets(sorted)
+      }
+      setLoading(false)
+      return
     }
+
+    // No text search — use direct table query with filters
+    let query = supabase.schema('northvault').from('assets').select('*')
 
     if (filters.contentTypes.length > 0) {
       query = query.in('content_type', filters.contentTypes)
@@ -69,7 +94,10 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
     query = query.order(sortBy, { ascending: sortDir === 'asc' })
 
     const { data, error } = await query
-    if (!error && data) {
+    if (error) {
+      console.error('Asset query error:', error)
+      setQueryError(error.message)
+    } else if (data) {
       setAssets(data as Asset[])
     }
     setLoading(false)
@@ -151,6 +179,9 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
     setBulkTagging(true)
     setBulkTagProgress({ done: 0, total: untagged.length })
 
+    let tagged = 0
+    let failed = 0
+
     for (let i = 0; i < untagged.length; i++) {
       const asset = untagged[i]
       try {
@@ -162,10 +193,24 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
         const data = await res.json()
         if (res.ok && data.tags?.length) {
           const merged = Array.from(new Set([...(asset.tags ?? []), ...data.tags]))
-          await supabase.schema('northvault').from('assets').update({ tags: merged }).eq('id', asset.id)
+          const { error: updateError } = await supabase
+            .schema('northvault')
+            .from('assets')
+            .update({ tags: merged })
+            .eq('id', asset.id)
+          if (updateError) {
+            console.error('Tag save failed for', asset.id, updateError)
+            failed++
+          } else {
+            tagged++
+          }
+        } else {
+          console.error('AI tag failed for', asset.id, data.error ?? '(no tags returned)')
+          failed++
         }
-      } catch {
-        // skip failed asset, continue
+      } catch (err) {
+        console.error('Tagging error for', asset.id, err)
+        failed++
       }
       setBulkTagProgress({ done: i + 1, total: untagged.length })
     }
@@ -173,6 +218,162 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
     setBulkTagging(false)
     setBulkTagProgress(null)
     loadAssets()
+    if (failed > 0) {
+      alert(
+        `Tagged ${tagged} image${tagged !== 1 ? 's' : ''}. ${failed} failed — check the browser console for details.`,
+      )
+    }
+  }
+
+  async function handleBulkAiTag() {
+    const selected = assets.filter((a) => selectedIds.has(a.id) && a.content_type === 'image')
+    if (selected.length === 0) {
+      alert('No images in your selection to AI-tag.')
+      return
+    }
+    if (!confirm(`AI-tag ${selected.length} image${selected.length !== 1 ? 's' : ''}? This may take a moment.`)) return
+    setBulkTagging(true)
+    setBulkTagProgress({ done: 0, total: selected.length })
+    let tagged = 0,
+      failed = 0
+    for (let i = 0; i < selected.length; i++) {
+      const asset = selected[i]
+      try {
+        const res = await fetch('/api/assets/ai-tags', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetId: asset.id }),
+        })
+        const data = await res.json()
+        if (res.ok && data.tags?.length) {
+          const merged = Array.from(new Set([...(asset.tags ?? []), ...data.tags]))
+          const { error: updateError } = await supabase
+            .schema('northvault')
+            .from('assets')
+            .update({ tags: merged })
+            .eq('id', asset.id)
+          if (updateError) {
+            console.error('Tag save failed', asset.id, updateError)
+            failed++
+          } else tagged++
+        } else {
+          console.error('AI tag failed', asset.id, data.error)
+          failed++
+        }
+      } catch (err) {
+        console.error('Tagging error', asset.id, err)
+        failed++
+      }
+      setBulkTagProgress({ done: i + 1, total: selected.length })
+    }
+    setBulkTagging(false)
+    setBulkTagProgress(null)
+    loadAssets()
+    if (failed > 0) alert(`Tagged ${tagged}. ${failed} failed — check browser console.`)
+  }
+
+  async function handleBulkThumbnail() {
+    const selected = assets.filter(
+      (a) => selectedIds.has(a.id) && (a.content_type === 'image' || a.content_type === 'pdf'),
+    )
+    if (selected.length === 0) {
+      alert('No images or PDFs in your selection.')
+      return
+    }
+    let done = 0,
+      failed = 0
+    for (const asset of selected) {
+      try {
+        const res = await fetch('/api/assets/thumbnail', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetId: asset.id }),
+        })
+        if (res.ok) done++
+        else failed++
+      } catch {
+        failed++
+      }
+    }
+    loadAssets()
+    alert(`Generated ${done} thumbnail${done !== 1 ? 's' : ''}${failed > 0 ? `, ${failed} failed` : ''}.`)
+  }
+
+  const [scanningFaces, setScanningFaces] = useState(false)
+  const [faceScanProgress, setFaceScanProgress] = useState<{ done: number; total: number; faces: number } | null>(null)
+
+  async function handleBulkScanFaces() {
+    const selected = assets.filter((a) => selectedIds.has(a.id) && a.content_type === 'image')
+    if (selected.length === 0) {
+      alert('No images in your selection.')
+      return
+    }
+
+    setScanningFaces(true)
+    setFaceScanProgress({ done: 0, total: selected.length, faces: 0 })
+
+    try {
+      const res = await fetch('/api/faces/detect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetIds: selected.map((a) => a.id) }),
+      })
+
+      if (!res.ok) {
+        alert('Face scan failed')
+        setScanningFaces(false)
+        return
+      }
+
+      const reader = res.body?.getReader()
+      if (!reader) {
+        setScanningFaces(false)
+        return
+      }
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let totalFaces = 0
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        let eventType = ''
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim()
+          } else if (line.startsWith('data: ') && eventType) {
+            try {
+              const data = JSON.parse(line.slice(6))
+              if (eventType === 'progress') {
+                setFaceScanProgress((p) =>
+                  p ? { ...p, done: (data.current as number) - 1, total: data.total as number } : p,
+                )
+              } else if (eventType === 'file') {
+                totalFaces += (data.facesFound as number) ?? 0
+                setFaceScanProgress((p) => (p ? { ...p, done: p.done + 1, faces: totalFaces } : p))
+              }
+            } catch {
+              /* skip */
+            }
+            eventType = ''
+          }
+        }
+      }
+
+      loadAssets()
+      alert(`Scanned ${selected.length} images. Found ${totalFaces} face${totalFaces !== 1 ? 's' : ''}.`)
+    } catch {
+      alert('Face scan failed')
+    } finally {
+      setScanningFaces(false)
+      setFaceScanProgress(null)
+    }
   }
 
   async function handleBulkTag(tag: string) {
@@ -456,6 +657,30 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
             </button>
           </div>
           <button
+            onClick={handleBulkAiTag}
+            disabled={bulkTagging}
+            className="rounded-md border border-[#6b7f5e] bg-[#f0f4ec] px-3 py-1.5 text-sm text-[#4a5a3f] hover:bg-[#e4ecda] disabled:opacity-50"
+          >
+            {bulkTagging && bulkTagProgress
+              ? `AI tagging… ${bulkTagProgress.done}/${bulkTagProgress.total}`
+              : 'AI tag selected'}
+          </button>
+          <button
+            onClick={handleBulkThumbnail}
+            className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-50"
+          >
+            Generate thumbnails
+          </button>
+          <button
+            onClick={handleBulkScanFaces}
+            disabled={scanningFaces}
+            className="rounded-md border border-purple-300 bg-purple-50 px-3 py-1.5 text-sm text-purple-700 hover:bg-purple-100 disabled:opacity-50"
+          >
+            {scanningFaces && faceScanProgress
+              ? `Scanning faces… ${faceScanProgress.done}/${faceScanProgress.total} (${faceScanProgress.faces} found)`
+              : 'Scan faces'}
+          </button>
+          <button
             onClick={handleBulkDelete}
             disabled={bulkDeleting}
             className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-sm text-red-600 hover:bg-red-100 disabled:opacity-50"
@@ -471,6 +696,13 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
           >
             Clear selection
           </button>
+        </div>
+      )}
+
+      {/* Query error */}
+      {queryError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          Search error: {queryError}
         </div>
       )}
 

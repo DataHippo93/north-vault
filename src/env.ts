@@ -8,8 +8,8 @@ export const env = createEnv({
     AZURE_TENANT_ID: z.string().uuid(),
     AZURE_CLIENT_ID: z.string().uuid(),
     AZURE_CLIENT_SECRET: z.string().min(1),
-    LOBSTER_SUPABASE_URL: z.string().url(),
-    LOBSTER_SUPABASE_SERVICE_KEY: z.string().min(1),
+    LOBSTER_SUPABASE_URL: z.string().url().optional(),
+    LOBSTER_SUPABASE_SERVICE_KEY: z.string().min(1).optional(),
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   },
   client: {

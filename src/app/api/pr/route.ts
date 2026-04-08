@@ -3,7 +3,9 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 
 function lobsterClient() {
-  return createSupabaseClient(process.env.LOBSTER_SUPABASE_URL!, process.env.LOBSTER_SUPABASE_SERVICE_KEY!)
+  const url = process.env.LOBSTER_SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL!
+  const key = process.env.LOBSTER_SUPABASE_SERVICE_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY!
+  return createSupabaseClient(url, key)
 }
 
 // GET /api/pr — list PR items, optionally filtered

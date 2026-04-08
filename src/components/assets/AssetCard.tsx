@@ -18,17 +18,47 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
   const [thumbUrl, setThumbUrl] = useState<string | null>(null)
 
   useEffect(() => {
-    if (asset.content_type === 'image') {
-      const path = asset.storage_path || asset.file_path
-      if (!path) return
-      supabase.storage
-        .from('northvault-assets')
-        .createSignedUrl(path, 3600)
-        .then(({ data }) => {
-          if (data?.signedUrl) setThumbUrl(data.signedUrl)
+    if (asset.content_type !== 'image' && asset.content_type !== 'pdf' && asset.content_type !== 'document') return
+
+    async function loadThumb() {
+      // If a thumbnail already exists in the DB, sign and use it directly
+      if (asset.thumbnail_path) {
+        const { data } = await supabase.storage.from('northvault-assets').createSignedUrl(asset.thumbnail_path, 3600)
+        if (data?.signedUrl) {
+          setThumbUrl(data.signedUrl)
+          return
+        }
+      }
+
+      // No thumbnail yet — ask the API to generate one, then display it
+      try {
+        const res = await fetch('/api/assets/thumbnail', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetId: asset.id }),
         })
+        if (res.ok) {
+          const data = await res.json()
+          if (data.signedUrl) {
+            setThumbUrl(data.signedUrl)
+            return
+          }
+        }
+      } catch {
+        // network error — fall through to fallback
+      }
+
+      // Fallback: show full image for images, nothing for other types
+      if (asset.content_type === 'image') {
+        const path = asset.storage_path || asset.file_path
+        if (!path) return
+        const { data } = await supabase.storage.from('northvault-assets').createSignedUrl(path, 3600)
+        if (data?.signedUrl) setThumbUrl(data.signedUrl)
+      }
     }
-  }, [asset.id, asset.storage_path, asset.file_path, asset.content_type])
+
+    void loadThumb()
+  }, [asset.id, asset.thumbnail_path, asset.storage_path, asset.file_path, asset.content_type])
 
   return (
     <div
@@ -39,7 +69,7 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
     >
       {/* Thumbnail area */}
       <div className="bg-sage-50 relative flex aspect-square items-center justify-center overflow-hidden">
-        {asset.content_type === 'image' && thumbUrl ? (
+        {thumbUrl ? (
           <Image
             src={thumbUrl}
             alt={asset.file_name}
