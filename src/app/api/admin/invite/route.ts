@@ -30,7 +30,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Email is required' }, { status: 400 })
   }
 
-  // Use raw service client (not cookie-based) for admin auth operations
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!supabaseUrl || !serviceKey) {
@@ -41,29 +40,49 @@ export async function POST(request: NextRequest) {
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://northvault.adkfragrance.com'
 
   try {
-    const { data, error } = await serviceClient.auth.admin.inviteUserByEmail(email, {
-      redirectTo: `${siteUrl}/auth/callback?next=/auth/set-password`,
-      data: { role },
+    // Use createUser instead of inviteUserByEmail because a trigger on
+    // auth.users auto-inserts into public.profiles with a strict role enum.
+    // We pass role:'production' in metadata to satisfy that trigger.
+    const { data, error } = await serviceClient.auth.admin.createUser({
+      email,
+      email_confirm: true, // Mark email as confirmed so they can log in after setting password
+      user_metadata: { role: 'production', full_name: '' },
     })
 
     if (error) {
-      console.error('Invite error:', error)
+      console.error('Create user error:', error)
       return NextResponse.json({ error: error.message }, { status: 400 })
     }
 
-    // Pre-create profile with correct role
-    if (data.user) {
-      await serviceClient.schema('northvault').from('profiles').upsert(
-        {
-          id: data.user.id,
-          email,
-          role,
-        },
-        { onConflict: 'id' },
-      )
+    if (!data.user) {
+      return NextResponse.json({ error: 'Failed to create user' }, { status: 500 })
     }
 
-    return NextResponse.json({ success: true, userId: data.user?.id })
+    // Create NorthVault profile with the actual role
+    await serviceClient.schema('northvault').from('profiles').upsert(
+      {
+        id: data.user.id,
+        email,
+        role,
+      },
+      { onConflict: 'id' },
+    )
+
+    // Send password reset email so the invited user can set their password
+    const { error: resetError } = await serviceClient.auth.resetPasswordForEmail(email, {
+      redirectTo: `${siteUrl}/auth/callback?next=/auth/set-password`,
+    })
+
+    if (resetError) {
+      console.error('Reset email error:', resetError)
+      return NextResponse.json({
+        success: true,
+        userId: data.user.id,
+        warning: 'User created but invite email failed. Use password reset to send them a link.',
+      })
+    }
+
+    return NextResponse.json({ success: true, userId: data.user.id })
   } catch (err) {
     console.error('Invite exception:', err)
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Unknown error' }, { status: 500 })
