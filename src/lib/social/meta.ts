@@ -13,7 +13,7 @@ export function getAuthUrl(redirectUri: string, state: string): string {
   const params = new URLSearchParams({
     client_id: process.env.META_APP_ID!,
     redirect_uri: redirectUri,
-    scope: 'ads_read,instagram_basic',
+    scope: 'ads_read',
     response_type: 'code',
     state,
   })
@@ -62,7 +62,7 @@ export async function exchangeCodeForToken(code: string, redirectUri: string): P
   return {
     accessToken: longData.access_token,
     expiresAt,
-    scopes: ['ads_read', 'instagram_basic'],
+    scopes: ['ads_read'],
   }
 }
 
