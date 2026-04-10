@@ -2,7 +2,6 @@ import { createClient } from '@/lib/supabase/server'
 import { getAuthUrl } from '@/lib/social/meta'
 import { NextResponse, type NextRequest } from 'next/server'
 import { randomBytes, createHmac } from 'crypto'
-import { cookies } from 'next/headers'
 
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
@@ -28,27 +27,25 @@ export async function GET(request: NextRequest) {
   const nonce = randomBytes(16).toString('hex')
   const state = createHmac('sha256', process.env.META_APP_SECRET).update(`${user.id}:${nonce}`).digest('hex')
 
-  const cookieStore = await cookies()
-  cookieStore.set('meta_oauth_state', `${user.id}:${nonce}:${state}`, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 600, // 10 minutes
-    path: '/',
-  })
-
   const business = request.nextUrl.searchParams.get('business') || 'both'
-  cookieStore.set('meta_oauth_business', business, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 600,
-    path: '/',
-  })
 
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL!
   const redirectUri = `${siteUrl}/api/social/callback/meta`
   const authUrl = getAuthUrl(redirectUri, state)
 
-  return NextResponse.redirect(authUrl)
+  // Set cookies directly on the redirect response so Set-Cookie headers are included
+  const response = NextResponse.redirect(authUrl)
+
+  const cookieOptions = {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax' as const,
+    maxAge: 600,
+    path: '/',
+  }
+
+  response.cookies.set('meta_oauth_state', `${user.id}:${nonce}:${state}`, cookieOptions)
+  response.cookies.set('meta_oauth_business', business, cookieOptions)
+
+  return response
 }
