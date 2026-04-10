@@ -40,13 +40,11 @@ export async function POST(request: NextRequest) {
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://northvault.adkfragrance.com'
 
   try {
-    // Use createUser instead of inviteUserByEmail because a trigger on
-    // auth.users auto-inserts into public.profiles with a strict role enum.
-    // We pass role:'production' in metadata to satisfy that trigger.
+    // createUser triggers northvault.handle_new_user() which auto-creates the profile
     const { data, error } = await serviceClient.auth.admin.createUser({
       email,
-      email_confirm: true, // Mark email as confirmed so they can log in after setting password
-      user_metadata: { role: 'production', full_name: '' },
+      email_confirm: true,
+      user_metadata: { role, full_name: '' },
     })
 
     if (error) {
