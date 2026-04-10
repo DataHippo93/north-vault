@@ -122,6 +122,20 @@ export default function SocialClient() {
     setSyncing(null)
   }
 
+  async function handleBusinessChange(connectionId: string, newBusiness: string) {
+    const res = await fetch('/api/social/connections', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ connectionId, business: newBusiness }),
+    })
+    if (res.ok) {
+      setConnections((prev) => prev.map((c) => (c.id === connectionId ? { ...c, business: newBusiness } : c)))
+    } else {
+      const data = await res.json()
+      alert(data.error ?? 'Failed to update business')
+    }
+  }
+
   function isExpired(conn: SocialConnection): boolean {
     if (!conn.token_expires_at) return false
     return new Date(conn.token_expires_at) < new Date()
@@ -218,7 +232,17 @@ export default function SocialClient() {
                     </span>
                   </td>
                   <td className="text-sage-900 px-6 py-4 font-medium">{conn.account_name || conn.account_id}</td>
-                  <td className="text-sage-500 hidden px-6 py-4 capitalize sm:table-cell">{conn.business}</td>
+                  <td className="hidden px-6 py-4 sm:table-cell">
+                    <select
+                      value={conn.business}
+                      onChange={(e) => handleBusinessChange(conn.id, e.target.value)}
+                      className="border-sage-300 focus:ring-vault-500 rounded border bg-white px-2 py-1 text-xs focus:ring-1 focus:outline-none"
+                    >
+                      <option value="both">Both</option>
+                      <option value="natures">Nature&apos;s Storehouse</option>
+                      <option value="adk">ADK Fragrance Farm</option>
+                    </select>
+                  </td>
                   <td className="hidden px-6 py-4 sm:table-cell">
                     {isExpired(conn) ? (
                       <span className="rounded bg-red-100 px-2 py-1 text-xs font-medium text-red-600">

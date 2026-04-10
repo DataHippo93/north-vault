@@ -45,7 +45,9 @@ export async function POST(request: NextRequest) {
 
   let accessToken: string
   try {
-    const encryptedBuf = Buffer.from(conn.access_token_encrypted.replace(/^\\x/, ''), 'hex')
+    const raw = conn.access_token_encrypted
+    const hexStr = typeof raw === 'string' ? raw.replace(/^\\x/, '') : Buffer.from(raw).toString('hex')
+    const encryptedBuf = Buffer.from(hexStr, 'hex')
     accessToken = decrypt(encryptedBuf)
   } catch (err) {
     return NextResponse.json({ error: `Token decryption failed: ${(err as Error).message}` }, { status: 500 })

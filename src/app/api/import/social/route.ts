@@ -53,8 +53,10 @@ export async function POST(request: NextRequest) {
 
   let accessToken: string
   try {
-    // access_token_encrypted comes as hex string from Supabase bytea
-    const encryptedBuf = Buffer.from(conn.access_token_encrypted.replace(/^\\x/, ''), 'hex')
+    // access_token_encrypted comes back from Supabase as hex string with \x prefix
+    const raw = conn.access_token_encrypted
+    const hexStr = typeof raw === 'string' ? raw.replace(/^\\x/, '') : Buffer.from(raw).toString('hex')
+    const encryptedBuf = Buffer.from(hexStr, 'hex')
     accessToken = decrypt(encryptedBuf)
   } catch (err) {
     return NextResponse.json({ error: `Token decryption failed: ${(err as Error).message}` }, { status: 500 })

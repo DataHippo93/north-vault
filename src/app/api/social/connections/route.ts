@@ -61,3 +61,37 @@ export async function DELETE(request: NextRequest) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ success: true })
 }
+
+export async function PATCH(request: NextRequest) {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const { data: profile } = await supabase
+    .schema('northvault')
+    .from('profiles')
+    .select('role')
+    .eq('id', user.id)
+    .single()
+  if (profile?.role !== 'admin') return NextResponse.json({ error: 'Admin required' }, { status: 403 })
+
+  const { connectionId, business } = (await request.json()) as { connectionId: string; business: string }
+  if (!connectionId || !business)
+    return NextResponse.json({ error: 'Missing connectionId or business' }, { status: 400 })
+
+  const serviceClient = createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+
+  const { error } = await serviceClient
+    .schema('northvault')
+    .from('social_connections')
+    .update({ business })
+    .eq('id', connectionId)
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ success: true })
+}

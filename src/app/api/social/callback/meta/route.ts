@@ -58,7 +58,8 @@ export async function GET(request: NextRequest) {
       process.env.SUPABASE_SERVICE_ROLE_KEY!,
     )
 
-    const encryptedToken = encrypt(tokens.accessToken)
+    // Encrypt token and convert to hex string for bytea column
+    const encryptedToken = '\\x' + encrypt(tokens.accessToken).toString('hex')
 
     for (const account of accounts) {
       await serviceClient
