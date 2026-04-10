@@ -58,21 +58,27 @@ export async function POST(request: NextRequest) {
 
     // Claude max dimension is 8000px — resize large images to fit within 4000px
     // (4000px is plenty for analysis and avoids Claude limits on high-res DSLR photos)
-    const metadata = await sharp(imageBuffer).metadata()
-    const maxDim = Math.max(metadata.width ?? 0, metadata.height ?? 0)
-    if (maxDim > 4000) {
+    // Always resize to ≤1568px — Claude's 5 MB base64 limit means a 4000px JPEG
+    // easily exceeds it; 1568px stays well within budget at any quality setting.
+    // Resize to ≤1568px and convert to JPEG
+    imageBuffer = await sharp(imageBuffer)
+      .resize({ width: 1568, height: 1568, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer()
+    mediaType = 'image/jpeg'
+
+    // Progressive quality reduction — Claude's base64 limit is 5MB (~3.75MB raw bytes)
+    for (const quality of [70, 50, 30]) {
+      if (imageBuffer.length <= 3.75 * 1024 * 1024) break
+      imageBuffer = await sharp(imageBuffer).jpeg({ quality }).toBuffer()
+    }
+
+    // Last resort: shrink dimensions further if still too large
+    if (imageBuffer.length > 3.75 * 1024 * 1024) {
       imageBuffer = await sharp(imageBuffer)
-        .resize({ width: 4000, height: 4000, fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 85 })
+        .resize({ width: 800, height: 800, fit: 'inside' })
+        .jpeg({ quality: 60 })
         .toBuffer()
-      mediaType = 'image/jpeg'
-    } else {
-      // Determine media type — default to jpeg if unrecognized
-      const mimeType = asset.mime_type?.toLowerCase() ?? ''
-      if (mimeType.includes('png')) mediaType = 'image/png'
-      else if (mimeType.includes('gif')) mediaType = 'image/gif'
-      else if (mimeType.includes('webp')) mediaType = 'image/webp'
-      else mediaType = 'image/jpeg'
     }
 
     imageBase64 = imageBuffer.toString('base64')
@@ -109,7 +115,7 @@ export async function POST(request: NextRequest) {
               type: 'text',
               text: `Analyze this image and return a JSON object with these fields:
 
-- "tags": array of 10-20 lowercase descriptive tags covering ALL of the following categories where applicable:
+- "tags": array of 10-25 lowercase descriptive tags covering ALL of the following categories where applicable:
   • SUBJECT: what the product/object/scene is (e.g. "soap", "candle", "essential oil", "tincture")
   • BACKGROUND: background style (e.g. "white background", "lifestyle", "outdoor", "studio", "rustic wood", "natural setting", "flat lay", "on-model")
   • COLORS: dominant colors (e.g. "green", "purple", "earth tones", "neutral")
@@ -117,7 +123,8 @@ export async function POST(request: NextRequest) {
   • COMPOSITION: shot type (e.g. "close-up", "macro", "overhead", "group shot", "single product", "hero shot")
   • SOCIAL MEDIA USE: inferred use case (e.g. "instagram-ready", "product launch", "story format", "banner", "square crop friendly")
   • BRAND CONTEXT: if identifiable as Nature's Storehouse grocery store or ADK Fragrance Farm, include that; also include "cbd", "hemp", "fragrance", "food", "grocery", etc. as relevant
-  • SEASON/OCCASION: if applicable (e.g. "holiday", "summer", "fall", "gift")
+  • PEOPLE: if people appear, describe them generically (e.g. "person", "woman", "man", "child", "group", "staff", "customer", "team", "portrait", "on-model"); NEVER name individuals
+  • SEASON/OCCASION: be specific — use exact holiday names when visible (e.g. "christmas", "easter", "halloween", "thanksgiving", "valentines day", "mothers day", "fathers day", "new years", "fourth of july", "hanukkah", "diwali") plus general terms like "holiday", "summer", "fall", "winter", "spring", "gift", "seasonal"
 
 - "extracted_text": array of all readable text in the image (product names, labels, ingredients, signs, prices — exact text as written)
 - "barcodes": array of any barcode or QR code values visible

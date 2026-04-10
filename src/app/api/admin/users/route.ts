@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
-import { createClient as createServiceClient } from '@supabase/supabase-js'
+import { createClient as createRawClient } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
 
 async function getAdminUser() {
@@ -26,24 +26,35 @@ export async function DELETE(request: NextRequest) {
   if (!userId) return NextResponse.json({ error: 'userId required' }, { status: 400 })
   if (userId === user.id) return NextResponse.json({ error: 'Cannot delete your own account' }, { status: 400 })
 
-  // Use service role client to delete from auth.users
-  const serviceClient = createServiceClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  )
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!supabaseUrl || !serviceKey) {
+    return NextResponse.json({ error: 'Server configuration error' }, { status: 500 })
+  }
 
-  const { error } = await serviceClient.auth.admin.deleteUser(userId)
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+  try {
+    const serviceClient = createRawClient(supabaseUrl, serviceKey)
 
-  // Profile will be cascade-deleted by DB trigger or FK; delete explicitly if not
-  const supabase = await createClient()
-  await supabase.schema('northvault').from('profiles').delete().eq('id', userId)
+    // Delete profile first (service role bypasses RLS)
+    const { error: profileError } = await serviceClient.schema('northvault').from('profiles').delete().eq('id', userId)
+    if (profileError) console.error('Profile delete error:', profileError)
 
-  return NextResponse.json({ success: true })
+    // Delete from auth.users
+    const { error } = await serviceClient.auth.admin.deleteUser(userId)
+    if (error) {
+      console.error('Auth delete error:', error)
+      return NextResponse.json({ error: error.message }, { status: 400 })
+    }
+
+    return NextResponse.json({ success: true })
+  } catch (err) {
+    console.error('Delete exception:', err)
+    return NextResponse.json({ error: err instanceof Error ? err.message : 'Unknown error' }, { status: 500 })
+  }
 }
 
 export async function PATCH(request: NextRequest) {
-  const { supabase, user, profile } = await getAdminUser()
+  const { user, profile } = await getAdminUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (profile?.role !== 'admin') return NextResponse.json({ error: 'Admin access required' }, { status: 403 })
 
@@ -53,7 +64,8 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'userId and role required' }, { status: 400 })
   }
 
-  const { error } = await supabase.schema('northvault').from('profiles').update({ role }).eq('id', userId)
+  const serviceClient = createRawClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+  const { error } = await serviceClient.schema('northvault').from('profiles').update({ role }).eq('id', userId)
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 400 })

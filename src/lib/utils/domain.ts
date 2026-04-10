@@ -1,8 +1,8 @@
 import { headers } from 'next/headers'
 
 const DOMAIN_BUSINESS_MAP: Record<string, string> = {
-  'northvault.adkfragrance.com': 'adk_fragrance',
-  'northvault.natures-storehouse.com': 'natures_storehouse',
+  'northvault.adkfragrance.com': 'adk',
+  'northvault.natures-storehouse.com': 'natures',
 }
 
 /**

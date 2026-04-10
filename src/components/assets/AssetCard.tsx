@@ -1,35 +1,27 @@
 'use client'
 
-import { useState, useEffect } from 'react'
 import Image from 'next/image'
-import { createClient } from '@/lib/supabase/client'
-import type { Asset, ContentType } from '@/types'
+import type { ContentType } from '@/types'
 import { formatFileSize } from '@/lib/utils/fileType'
 
+interface AssetCardData {
+  id: string
+  file_name: string
+  file_size: number
+  content_type: string
+  business: string
+  tags: string[] | null
+}
+
 interface Props {
-  asset: Asset
+  asset: AssetCardData
+  thumbUrl: string | null
   selected: boolean
   onSelect: (id: string, shiftKey: boolean) => void
   onClick: () => void
 }
 
-export default function AssetCard({ asset, selected, onSelect, onClick }: Props) {
-  const supabase = createClient()
-  const [thumbUrl, setThumbUrl] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (asset.content_type === 'image') {
-      const path = asset.storage_path || asset.file_path
-      if (!path) return
-      supabase.storage
-        .from('northvault-assets')
-        .createSignedUrl(path, 3600)
-        .then(({ data }) => {
-          if (data?.signedUrl) setThumbUrl(data.signedUrl)
-        })
-    }
-  }, [asset.id, asset.storage_path, asset.file_path, asset.content_type])
-
+export default function AssetCard({ asset, thumbUrl, selected, onSelect, onClick }: Props) {
   return (
     <div
       className={`group relative cursor-pointer overflow-hidden rounded-xl border bg-white transition-all hover:shadow-md ${
@@ -39,13 +31,14 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
     >
       {/* Thumbnail area */}
       <div className="bg-sage-50 relative flex aspect-square items-center justify-center overflow-hidden">
-        {asset.content_type === 'image' && thumbUrl ? (
+        {thumbUrl ? (
           <Image
             src={thumbUrl}
             alt={asset.file_name}
             fill
             className="object-cover"
             sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
+            loading="lazy"
           />
         ) : (
           <TypeIcon type={asset.content_type as ContentType} />

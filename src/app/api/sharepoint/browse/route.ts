@@ -178,9 +178,16 @@ export async function POST(request: NextRequest) {
     const siteData = await siteRes.json()
     const resolvedSiteId = siteData.id
 
-    graphEndpoint = parsed.itemPath
-      ? `https://graph.microsoft.com/v1.0/sites/${resolvedSiteId}/drive/root:/${encodeURIComponent(parsed.itemPath).replace(/%2F/g, '/')}:/children`
-      : `https://graph.microsoft.com/v1.0/sites/${resolvedSiteId}/drive/root/children`
+    // Prefer the configured drive ID (more reliable than the site's default drive)
+    if (resolvedDriveId) {
+      graphEndpoint = parsed.itemPath
+        ? `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/root:/${encodeURIComponent(parsed.itemPath).replace(/%2F/g, '/')}:/children`
+        : `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/root/children`
+    } else {
+      graphEndpoint = parsed.itemPath
+        ? `https://graph.microsoft.com/v1.0/sites/${resolvedSiteId}/drive/root:/${encodeURIComponent(parsed.itemPath).replace(/%2F/g, '/')}:/children`
+        : `https://graph.microsoft.com/v1.0/sites/${resolvedSiteId}/drive/root/children`
+    }
   } else {
     // Fall back to the configured ADK drive root
     const defaultDriveId = process.env.SHAREPOINT_ADK_DRIVE_ID

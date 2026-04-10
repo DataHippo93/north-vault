@@ -14,6 +14,13 @@ interface Props {
   defaultBusiness: string | null
 }
 
+// Columns needed for the card grid — avoids fetching large text fields
+const GRID_COLUMNS =
+  'id, file_name, original_filename, file_path, file_size, mime_type, content_type, sha256_hash, business, uploaded_by, created_at, original_created_at, storage_path, storage_url, tags, notes, thumbnail_path, faces_scanned'
+
+// How many items to render at a time before "Load more"
+const PAGE_RENDER_SIZE = 100
+
 export default function LibraryClient({ userId: _userId, userRole, defaultBusiness }: Props) {
   const supabase = createClient()
   const [assets, setAssets] = useState<Asset[]>([])
@@ -34,17 +41,45 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
   const [bulkTagging, setBulkTagging] = useState(false)
   const [bulkTagProgress, setBulkTagProgress] = useState<{ done: number; total: number } | null>(null)
   const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [queryError, setQueryError] = useState<string | null>(null)
+  const [totalCount, setTotalCount] = useState<number | null>(null)
+  const [thumbUrls, setThumbUrls] = useState<Record<string, string | null>>({})
+  const [renderLimit, setRenderLimit] = useState(PAGE_RENDER_SIZE)
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
-    let query = supabase.schema('northvault').from('assets').select('*')
+    setQueryError(null)
 
+    // Use the search_assets RPC when a text query is present — it supports
+    // partial matching inside the tags array (e.g. "loon" matches "black loon").
     if (filters.query) {
-      // Cast array columns to text so partial barcode/extracted-text search works
-      query = query.or(
-        `file_name.ilike.%${filters.query}%,original_filename.ilike.%${filters.query}%,notes.ilike.%${filters.query}%,barcodes::text.ilike.%${filters.query}%,extracted_text::text.ilike.%${filters.query}%`,
-      )
+      const { data, error } = await supabase.schema('northvault').rpc('search_assets', {
+        search_term: filters.query,
+        p_business: filters.businessEntity !== 'all' ? filters.businessEntity : null,
+        p_content_types: filters.contentTypes.length > 0 ? filters.contentTypes : null,
+        p_tags: filters.tags.length > 0 ? filters.tags : null,
+        p_date_from: filters.dateFrom || null,
+        p_date_to: filters.dateTo ? filters.dateTo + 'T23:59:59Z' : null,
+      })
+      if (error) {
+        console.error('Search RPC error:', error)
+        setQueryError(error.message)
+      } else if (data) {
+        const sorted = [...(data as Asset[])].sort((a, b) => {
+          const av = a[sortBy as keyof Asset] as string | number | null
+          const bv = b[sortBy as keyof Asset] as string | number | null
+          if (av === null || av === undefined) return 1
+          if (bv === null || bv === undefined) return -1
+          return sortDir === 'asc' ? (av < bv ? -1 : 1) : av > bv ? -1 : 1
+        })
+        setAssets(sorted)
+      }
+      setLoading(false)
+      return
     }
+
+    // No text search — use direct table query with filters
+    let query = supabase.schema('northvault').from('assets').select(GRID_COLUMNS)
 
     if (filters.contentTypes.length > 0) {
       query = query.in('content_type', filters.contentTypes)
@@ -68,16 +103,67 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
 
     query = query.order(sortBy, { ascending: sortDir === 'asc' })
 
-    const { data, error } = await query
-    if (!error && data) {
-      setAssets(data as Asset[])
+    // Paginate to bypass Supabase's 1000-row default limit
+    const PAGE_SIZE = 1000
+    let allData: Asset[] = []
+    let from = 0
+    let keepGoing = true
+
+    while (keepGoing) {
+      const { data: page, error: pageError } = await query.range(from, from + PAGE_SIZE - 1)
+      if (pageError) {
+        console.error('Asset query error:', pageError)
+        setQueryError(pageError.message)
+        setLoading(false)
+        return
+      }
+      if (page) allData = allData.concat(page as Asset[])
+      if (!page || page.length < PAGE_SIZE) keepGoing = false
+      else from += PAGE_SIZE
     }
+
+    setAssets(allData)
+    setRenderLimit(PAGE_RENDER_SIZE)
     setLoading(false)
   }, [filters, sortBy, sortDir])
+
+  // Fetch total asset count (unfiltered)
+  useEffect(() => {
+    async function fetchTotalCount() {
+      const { count } = await supabase.schema('northvault').from('assets').select('id', { count: 'exact', head: true })
+      setTotalCount(count)
+    }
+    fetchTotalCount()
+  }, [])
 
   useEffect(() => {
     loadAssets()
   }, [loadAssets])
+
+  // Batch-load thumbnail URLs for currently visible assets
+  useEffect(() => {
+    if (assets.length === 0) return
+    const visible = assets.slice(0, renderLimit)
+    const needThumbs = visible.filter((a) => !(a.id in thumbUrls)).map((a) => a.id)
+    if (needThumbs.length === 0) return
+
+    async function loadThumbs() {
+      try {
+        const res = await fetch('/api/assets/batch-thumbnails', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetIds: needThumbs }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setThumbUrls((prev) => ({ ...prev, ...data.urls }))
+        }
+      } catch {
+        // Non-fatal — cards will show type icons
+      }
+    }
+    loadThumbs()
+  }, [assets, renderLimit])
 
   async function handleDeleteAsset(asset: Asset) {
     if (!confirm(`Delete "${asset.file_name}"? This cannot be undone.`)) return
@@ -151,6 +237,9 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
     setBulkTagging(true)
     setBulkTagProgress({ done: 0, total: untagged.length })
 
+    let tagged = 0
+    let failed = 0
+
     for (let i = 0; i < untagged.length; i++) {
       const asset = untagged[i]
       try {
@@ -162,10 +251,24 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
         const data = await res.json()
         if (res.ok && data.tags?.length) {
           const merged = Array.from(new Set([...(asset.tags ?? []), ...data.tags]))
-          await supabase.schema('northvault').from('assets').update({ tags: merged }).eq('id', asset.id)
+          const { error: updateError } = await supabase
+            .schema('northvault')
+            .from('assets')
+            .update({ tags: merged })
+            .eq('id', asset.id)
+          if (updateError) {
+            console.error('Tag save failed for', asset.id, updateError)
+            failed++
+          } else {
+            tagged++
+          }
+        } else {
+          console.error('AI tag failed for', asset.id, data.error ?? '(no tags returned)')
+          failed++
         }
-      } catch {
-        // skip failed asset, continue
+      } catch (err) {
+        console.error('Tagging error for', asset.id, err)
+        failed++
       }
       setBulkTagProgress({ done: i + 1, total: untagged.length })
     }
@@ -173,6 +276,162 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
     setBulkTagging(false)
     setBulkTagProgress(null)
     loadAssets()
+    if (failed > 0) {
+      alert(
+        `Tagged ${tagged} image${tagged !== 1 ? 's' : ''}. ${failed} failed — check the browser console for details.`,
+      )
+    }
+  }
+
+  async function handleBulkAiTag() {
+    const selected = assets.filter((a) => selectedIds.has(a.id) && a.content_type === 'image')
+    if (selected.length === 0) {
+      alert('No images in your selection to AI-tag.')
+      return
+    }
+    if (!confirm(`AI-tag ${selected.length} image${selected.length !== 1 ? 's' : ''}? This may take a moment.`)) return
+    setBulkTagging(true)
+    setBulkTagProgress({ done: 0, total: selected.length })
+    let tagged = 0,
+      failed = 0
+    for (let i = 0; i < selected.length; i++) {
+      const asset = selected[i]
+      try {
+        const res = await fetch('/api/assets/ai-tags', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetId: asset.id }),
+        })
+        const data = await res.json()
+        if (res.ok && data.tags?.length) {
+          const merged = Array.from(new Set([...(asset.tags ?? []), ...data.tags]))
+          const { error: updateError } = await supabase
+            .schema('northvault')
+            .from('assets')
+            .update({ tags: merged })
+            .eq('id', asset.id)
+          if (updateError) {
+            console.error('Tag save failed', asset.id, updateError)
+            failed++
+          } else tagged++
+        } else {
+          console.error('AI tag failed', asset.id, data.error)
+          failed++
+        }
+      } catch (err) {
+        console.error('Tagging error', asset.id, err)
+        failed++
+      }
+      setBulkTagProgress({ done: i + 1, total: selected.length })
+    }
+    setBulkTagging(false)
+    setBulkTagProgress(null)
+    loadAssets()
+    if (failed > 0) alert(`Tagged ${tagged}. ${failed} failed — check browser console.`)
+  }
+
+  async function handleBulkThumbnail() {
+    const selected = assets.filter(
+      (a) => selectedIds.has(a.id) && (a.content_type === 'image' || a.content_type === 'pdf'),
+    )
+    if (selected.length === 0) {
+      alert('No images or PDFs in your selection.')
+      return
+    }
+    let done = 0,
+      failed = 0
+    for (const asset of selected) {
+      try {
+        const res = await fetch('/api/assets/thumbnail', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetId: asset.id }),
+        })
+        if (res.ok) done++
+        else failed++
+      } catch {
+        failed++
+      }
+    }
+    loadAssets()
+    alert(`Generated ${done} thumbnail${done !== 1 ? 's' : ''}${failed > 0 ? `, ${failed} failed` : ''}.`)
+  }
+
+  const [scanningFaces, setScanningFaces] = useState(false)
+  const [faceScanProgress, setFaceScanProgress] = useState<{ done: number; total: number; faces: number } | null>(null)
+
+  async function handleBulkScanFaces() {
+    const selected = assets.filter((a) => selectedIds.has(a.id) && a.content_type === 'image')
+    if (selected.length === 0) {
+      alert('No images in your selection.')
+      return
+    }
+
+    setScanningFaces(true)
+    setFaceScanProgress({ done: 0, total: selected.length, faces: 0 })
+
+    try {
+      const res = await fetch('/api/faces/detect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetIds: selected.map((a) => a.id) }),
+      })
+
+      if (!res.ok) {
+        alert('Face scan failed')
+        setScanningFaces(false)
+        return
+      }
+
+      const reader = res.body?.getReader()
+      if (!reader) {
+        setScanningFaces(false)
+        return
+      }
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let totalFaces = 0
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        let eventType = ''
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim()
+          } else if (line.startsWith('data: ') && eventType) {
+            try {
+              const data = JSON.parse(line.slice(6))
+              if (eventType === 'progress') {
+                setFaceScanProgress((p) =>
+                  p ? { ...p, done: (data.current as number) - 1, total: data.total as number } : p,
+                )
+              } else if (eventType === 'file') {
+                totalFaces += (data.facesFound as number) ?? 0
+                setFaceScanProgress((p) => (p ? { ...p, done: p.done + 1, faces: totalFaces } : p))
+              }
+            } catch {
+              /* skip */
+            }
+            eventType = ''
+          }
+        }
+      }
+
+      loadAssets()
+      alert(`Scanned ${selected.length} images. Found ${totalFaces} face${totalFaces !== 1 ? 's' : ''}.`)
+    } catch {
+      alert('Face scan failed')
+    } finally {
+      setScanningFaces(false)
+      setFaceScanProgress(null)
+    }
   }
 
   async function handleBulkTag(tag: string) {
@@ -456,6 +715,30 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
             </button>
           </div>
           <button
+            onClick={handleBulkAiTag}
+            disabled={bulkTagging}
+            className="rounded-md border border-[#6b7f5e] bg-[#f0f4ec] px-3 py-1.5 text-sm text-[#4a5a3f] hover:bg-[#e4ecda] disabled:opacity-50"
+          >
+            {bulkTagging && bulkTagProgress
+              ? `AI tagging… ${bulkTagProgress.done}/${bulkTagProgress.total}`
+              : 'AI tag selected'}
+          </button>
+          <button
+            onClick={handleBulkThumbnail}
+            className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-50"
+          >
+            Generate thumbnails
+          </button>
+          <button
+            onClick={handleBulkScanFaces}
+            disabled={scanningFaces}
+            className="rounded-md border border-purple-300 bg-purple-50 px-3 py-1.5 text-sm text-purple-700 hover:bg-purple-100 disabled:opacity-50"
+          >
+            {scanningFaces && faceScanProgress
+              ? `Scanning faces… ${faceScanProgress.done}/${faceScanProgress.total} (${faceScanProgress.faces} found)`
+              : 'Scan faces'}
+          </button>
+          <button
             onClick={handleBulkDelete}
             disabled={bulkDeleting}
             className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-sm text-red-600 hover:bg-red-100 disabled:opacity-50"
@@ -474,9 +757,20 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
         </div>
       )}
 
+      {/* Query error */}
+      {queryError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          Search error: {queryError}
+        </div>
+      )}
+
       {/* Asset count */}
       <div className="text-sage-500 text-sm">
-        {loading ? 'Loading...' : `${assets.length} asset${assets.length !== 1 ? 's' : ''}`}
+        {loading
+          ? 'Loading...'
+          : totalCount !== null && totalCount !== assets.length
+            ? `${assets.length} shown of ${totalCount.toLocaleString()} total`
+            : `${assets.length.toLocaleString()} asset${assets.length !== 1 ? 's' : ''}`}
       </div>
 
       {/* Grid/List view */}
@@ -496,36 +790,62 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
           <p className="text-sm">Upload some files to get started.</p>
         </div>
       ) : view === 'grid' ? (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {assets.map((asset) => (
-            <AssetCard
-              key={asset.id}
-              asset={asset}
-              selected={selectedIds.has(asset.id)}
-              onClick={() => setSelectedAsset(asset)}
-              onSelect={handleSelect}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {assets.map((asset) => (
-            <div
-              key={asset.id}
-              className="border-sage-200 flex items-center justify-between rounded-lg border bg-white p-3"
-            >
-              <div className="min-w-0">
-                <div className="text-sage-900 truncate font-medium">{asset.file_name}</div>
-                <div className="text-sage-500 text-xs">
-                  {formatFileSize(asset.file_size)} · {asset.content_type}
-                </div>
-              </div>
-              <button onClick={() => setSelectedAsset(asset)} className="text-vault-700 hover:text-vault-900 text-sm">
-                View
+        <>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+            {assets.slice(0, renderLimit).map((asset) => (
+              <AssetCard
+                key={asset.id}
+                asset={asset}
+                thumbUrl={thumbUrls[asset.id] ?? null}
+                selected={selectedIds.has(asset.id)}
+                onClick={() => setSelectedAsset(asset)}
+                onSelect={handleSelect}
+              />
+            ))}
+          </div>
+          {renderLimit < assets.length && (
+            <div className="flex justify-center pt-4">
+              <button
+                onClick={() => setRenderLimit((l) => l + PAGE_RENDER_SIZE)}
+                className="border-sage-300 text-sage-700 hover:bg-sage-100 rounded-lg border bg-white px-6 py-2.5 text-sm font-medium transition-colors"
+              >
+                Load more ({Math.min(PAGE_RENDER_SIZE, assets.length - renderLimit)} of{' '}
+                {(assets.length - renderLimit).toLocaleString()} remaining)
               </button>
             </div>
-          ))}
-        </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="space-y-2">
+            {assets.slice(0, renderLimit).map((asset) => (
+              <div
+                key={asset.id}
+                className="border-sage-200 flex items-center justify-between rounded-lg border bg-white p-3"
+              >
+                <div className="min-w-0">
+                  <div className="text-sage-900 truncate font-medium">{asset.file_name}</div>
+                  <div className="text-sage-500 text-xs">
+                    {formatFileSize(asset.file_size)} · {asset.content_type}
+                  </div>
+                </div>
+                <button onClick={() => setSelectedAsset(asset)} className="text-vault-700 hover:text-vault-900 text-sm">
+                  View
+                </button>
+              </div>
+            ))}
+          </div>
+          {renderLimit < assets.length && (
+            <div className="flex justify-center pt-4">
+              <button
+                onClick={() => setRenderLimit((l) => l + PAGE_RENDER_SIZE)}
+                className="border-sage-300 text-sage-700 hover:bg-sage-100 rounded-lg border bg-white px-6 py-2.5 text-sm font-medium transition-colors"
+              >
+                Load more ({(assets.length - renderLimit).toLocaleString()} remaining)
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {selectedAsset && (

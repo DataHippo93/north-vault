@@ -82,25 +82,6 @@ export default function AdminClient({ currentUserId, users: initialUsers }: Prop
     <div className="mx-auto max-w-4xl space-y-8">
       <h1 className="text-sage-950 text-2xl font-bold">Admin</h1>
 
-      {/* Quick actions */}
-      <div className="rounded-xl border border-slate-200 bg-white p-6">
-        <h2 className="mb-3 text-base font-semibold text-slate-900">Tools</h2>
-        <Link
-          href="/admin/import"
-          className="inline-flex items-center gap-2 rounded-lg bg-[#4a5a3f] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#3d4b34]"
-        >
-          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
-            />
-          </svg>
-          SharePoint Import
-        </Link>
-      </div>
-
       {/* Invite user */}
       <div className="border-sage-200 rounded-xl border bg-white p-6 shadow-sm">
         <h2 className="text-sage-900 mb-4 text-base font-semibold">Invite user</h2>
@@ -139,6 +120,54 @@ export default function AdminClient({ currentUserId, users: initialUsers }: Prop
             {inviteResult.error}
           </p>
         )}
+      </div>
+
+      {/* Tools */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Link
+          href="/admin/social"
+          className="border-sage-200 hover:border-vault-300 flex items-center gap-4 rounded-xl border bg-white p-5 shadow-sm transition-colors"
+        >
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-100">
+            <svg
+              className="h-5 w-5 text-blue-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+          </div>
+          <div>
+            <div className="text-sage-900 text-sm font-semibold">Social Media</div>
+            <div className="text-sage-500 text-xs">Import creatives &amp; track performance</div>
+          </div>
+        </Link>
+        <Link
+          href="/admin/import"
+          className="border-sage-200 hover:border-vault-300 flex items-center gap-4 rounded-xl border bg-white p-5 shadow-sm transition-colors"
+        >
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-100">
+            <svg
+              className="h-5 w-5 text-green-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
+              />
+            </svg>
+          </div>
+          <div>
+            <div className="text-sage-900 text-sm font-semibold">SharePoint Import</div>
+            <div className="text-sage-500 text-xs">Import files from SharePoint</div>
+          </div>
+        </Link>
       </div>
 
       {/* User list */}

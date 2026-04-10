@@ -22,6 +22,7 @@ export interface Asset {
   extracted_text: string[] | null
   barcodes: string[] | null
   exif_data: Record<string, unknown> | null
+  faces_scanned?: boolean
 }
 
 export interface UploadFile {
@@ -54,6 +55,29 @@ export interface Collection {
   created_by: string | null
 }
 
+export interface Person {
+  id: string
+  name: string | null
+  representative_face_id: string | null
+  face_count: number
+  created_at: string
+  updated_at: string
+  /** Joined for display */
+  crop_url?: string
+}
+
+export interface Face {
+  id: string
+  asset_id: string
+  person_id: string | null
+  box_x: number
+  box_y: number
+  box_width: number
+  box_height: number
+  confidence: number
+  crop_path: string | null
+}
+
 export interface Profile {
   id: string
   email: string | null
@@ -61,4 +85,51 @@ export interface Profile {
   role: string
   business: string | null
   created_at: string
+}
+
+export type SocialPlatform = 'meta' | 'instagram' | 'tiktok'
+
+export interface SocialConnection {
+  id: string
+  platform: SocialPlatform
+  business: string
+  account_id: string
+  account_name: string | null
+  token_expires_at: string | null
+  scopes: string[] | null
+  connected_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SocialCreative {
+  id: string
+  asset_id: string
+  connection_id: string
+  platform: SocialPlatform
+  platform_creative_id: string
+  platform_ad_id: string | null
+  platform_adset_id: string | null
+  platform_campaign_id: string | null
+  platform_campaign_name: string | null
+  creative_url: string | null
+  creative_metadata: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface SocialMetric {
+  id: string
+  creative_id: string
+  date: string
+  impressions: number
+  clicks: number
+  spend_cents: number
+  conversions: number
+  video_views: number
+  reach: number
+  engagement: number
+  ctr: number
+  cpm_cents: number
+  cpc_cents: number
+  fetched_at: string
 }

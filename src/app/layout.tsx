@@ -8,7 +8,9 @@ export const metadata: Metadata = {
   },
   description: "Internal digital asset management for Nature's Storehouse and ADK Fragrance Farm.",
   robots: { index: false, follow: false },
-  icons: { icon: '/favicon.ico' },
+  icons: {
+    icon: [{ url: '/favicon.svg', type: 'image/svg+xml' }, { url: '/favicon.ico' }],
+  },
 }
 
 export default function RootLayout({
