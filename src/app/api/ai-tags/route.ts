@@ -17,6 +17,7 @@ export async function POST(request: NextRequest) {
     mimeType: string
     contentType: string
     imageDataUrl?: string
+    faceGroup?: string
   }
 
   if (!fileName) {
@@ -52,17 +53,18 @@ export async function POST(request: NextRequest) {
       content.push({
         type: 'text',
         text: `Analyze this image and return a JSON object with:
+- "face_group": if this image contains a person, return a short stable grouping label like "adult male", "adult female", "child", or "group"; otherwise null
 - "tags": 5-10 lowercase descriptive tags (subject, colors, mood, business context — Nature's Storehouse grocery or ADK Fragrance Farm if identifiable)
 - "extracted_text": array of all readable text found in the image (labels, product names, descriptions, ingredients)
 - "barcodes": array of any barcode/QR code values visible
 
-Return ONLY valid JSON. Example: {"tags":["soap","green","natural"],"extracted_text":["Healing Woods CBD Soap","4oz"],"barcodes":["012345678901"]}`,
+Return ONLY valid JSON. Example: {"face_group":"adult female","tags":["soap","green","natural"],"extracted_text":["Healing Woods CBD Soap","4oz"],"barcodes":["012345678901"]}`,
       })
     } else {
       content.push({
         type: 'text',
         text: `Suggest tags for this file. File name: "${fileName}", MIME type: ${mimeType}, content category: ${contentType}.
-Return a JSON object: {"tags":["tag1","tag2"],"extracted_text":[],"barcodes":[]}
+Return a JSON object: {"face_group":null,"tags":["tag1","tag2"],"extracted_text":[],"barcodes":[]}
 Return ONLY valid JSON.`,
       })
     }
@@ -78,6 +80,7 @@ Return ONLY valid JSON.`,
     let tags: string[] = []
     let extractedText: string[] = []
     let barcodes: string[] = []
+    let faceGroup: string | null = null
 
     try {
       const parsed = JSON.parse(responseText.replace(/```json\n?|\n?```/g, '').trim())
@@ -91,6 +94,7 @@ Return ONLY valid JSON.`,
             )
             .filter(Boolean)
         : []
+      faceGroup = typeof parsed.face_group === 'string' && parsed.face_group.trim() ? parsed.face_group.trim().toLowerCase() : null
       extractedText = Array.isArray(parsed.extracted_text) ? parsed.extracted_text.filter(Boolean) : []
       barcodes = Array.isArray(parsed.barcodes) ? parsed.barcodes.filter(Boolean) : []
     } catch {
@@ -105,7 +109,7 @@ Return ONLY valid JSON.`,
         .filter(Boolean)
     }
 
-    return NextResponse.json({ tags, extractedText, barcodes })
+    return NextResponse.json({ tags, extractedText, barcodes, faceGroup })
   } catch (err) {
     console.error('AI tagging error:', err)
     return NextResponse.json({ tags: [] })

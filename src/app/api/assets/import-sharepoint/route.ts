@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { computeSHA256FromBuffer } from '@/lib/utils/fileHash'
 import { getContentType } from '@/lib/utils/fileType'
 import Anthropic from '@anthropic-ai/sdk'
+import { processPeopleAssets } from '@/lib/people/process'
 
 export const runtime = 'nodejs'
 
@@ -230,6 +231,17 @@ export async function POST(request: NextRequest) {
           })
         } catch (err) {
           console.error('AI tagging failed:', err)
+        }
+      }
+
+      if (contentType === 'image') {
+        try {
+          await processPeopleAssets({
+            supabase: supabase as unknown as Parameters<typeof processPeopleAssets>[0]['supabase'],
+            assetIds: [insert.data.id],
+          })
+        } catch (peopleError) {
+          console.error('People indexing failed:', peopleError)
         }
       }
 

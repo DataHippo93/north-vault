@@ -107,6 +107,23 @@ export default function AppShell({ children, userEmail, userRole }: AppShellProp
         </Link>
 
         <Link
+          href="/people"
+          className={`flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-xs font-medium transition-colors ${
+            pathname.startsWith('/people') ? 'text-vault-600' : 'text-sage-400 hover:text-vault-600'
+          }`}
+        >
+          <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M17 20a4 4 0 00-8 0m8 0a4 4 0 10-8 0m8 0H7m10 0h2m-2 0a2 2 0 100-4m-8 4H5m2 0a2 2 0 110-4m0 4h10m-7-8a3 3 0 100-6 3 3 0 000 6zm8 2a2 2 0 100-4 2 2 0 000 4z"
+            />
+          </svg>
+          People
+        </Link>
+
+        <Link
           href="/upload"
           className="flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-xs font-medium text-white transition-colors"
         >

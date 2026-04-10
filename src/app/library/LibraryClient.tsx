@@ -270,6 +270,7 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
         console.error('Tagging error for', asset.id, err)
         failed++
       }
+      if (i < untagged.length - 1) await new Promise((resolve) => setTimeout(resolve, 6200))
       setBulkTagProgress({ done: i + 1, total: untagged.length })
     }
 
@@ -434,6 +435,46 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
     }
   }
 
+  async function handleGroupFacesAndTag() {
+    const faceAssets = assets.filter((a) => a.content_type === 'image')
+    if (faceAssets.length === 0) return
+    if (!confirm(`Analyze ${faceAssets.length} image${faceAssets.length !== 1 ? 's' : ''} for face groups and tags?`)) return
+
+    setBulkTagging(true)
+    setBulkTagProgress({ done: 0, total: faceAssets.length })
+
+    for (let i = 0; i < faceAssets.length; i++) {
+      const asset = faceAssets[i]
+      try {
+        const res = await fetch('/api/ai-tags', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            assetId: asset.id,
+            fileName: asset.file_name,
+            mimeType: asset.mime_type,
+            contentType: asset.content_type,
+          }),
+        })
+        const data = await res.json()
+        const merged = Array.from(new Set([...(asset.tags ?? []), ...(data.tags ?? []), ...(data.faceGroup ? [data.faceGroup] : [])]))
+        await supabase
+          .schema('northvault')
+          .from('assets')
+          .update({ tags: merged, face_group: data.faceGroup ?? null })
+          .eq('id', asset.id)
+      } catch {
+        // continue
+      }
+      if (i < faceAssets.length - 1) await new Promise((resolve) => setTimeout(resolve, 6200))
+      setBulkTagProgress({ done: i + 1, total: faceAssets.length })
+    }
+
+    setBulkTagging(false)
+    setBulkTagProgress(null)
+    loadAssets()
+  }
+
   async function handleBulkTag(tag: string) {
     if (!tag.trim()) return
     const selected = assets.filter((a) => selectedIds.has(a.id))
@@ -540,6 +581,13 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
               </button>
             )
           })()}
+          <button
+            onClick={handleGroupFacesAndTag}
+            disabled={bulkTagging}
+            className="border-vault-300 bg-vault-50 text-vault-700 hover:bg-vault-100 hidden items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-60 sm:inline-flex"
+          >
+            Group faces + tag
+          </button>
           <Link
             href="/upload"
             className="hidden items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800 sm:inline-flex"

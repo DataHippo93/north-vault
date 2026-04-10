@@ -21,8 +21,42 @@ export interface Asset {
   thumbnail_path: string | null
   extracted_text: string[] | null
   barcodes: string[] | null
+  face_group: string | null
+  face_label: string | null
+  face_confidence: number | null
+  people_indexed_at?: string | null
   exif_data: Record<string, unknown> | null
   faces_scanned?: boolean
+}
+
+export interface FaceGroup {
+  id: string
+  slug: string
+  display_name: string | null
+  centroid: number[]
+  face_count: number
+  image_count: number
+  representative_asset_id: string | null
+  representative_face_index: number | null
+  representative_face_confidence: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AssetFace {
+  id: string
+  asset_id: string
+  face_group_id: string
+  face_index: number
+  bounding_box: {
+    left: number
+    top: number
+    width: number
+    height: number
+  }
+  embedding: number[]
+  confidence: number
+  created_at: string
 }
 
 export interface UploadFile {

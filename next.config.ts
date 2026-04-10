@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
       },
     ],
   },
-  serverExternalPackages: ['@vladmandic/face-api', '@tensorflow/tfjs', 'canvas', 'sharp', 'pdfjs-dist'],
+  serverExternalPackages: ['@vladmandic/face-api', '@tensorflow/tfjs', 'canvas', 'sharp', 'pdfjs-dist', '@huggingface/transformers'],
 }
 
 export default nextConfig

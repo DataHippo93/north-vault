@@ -260,6 +260,14 @@ export default function UploadClient({ userId }: Props) {
     }
 
     updateFile(index, { status: 'done', progress: 100, assetId: asset.id })
+
+    if (contentType === 'image') {
+      void fetch('/api/people/index', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetId: asset.id }),
+      })
+    }
   }
 
   async function handleBulkImportFromSharePoint() {

@@ -327,6 +327,21 @@ export default function AssetDetail({
             </dl>
           </div>
 
+          {/* People */}
+          {(asset.face_label || asset.face_group) && (
+            <div className="space-y-2">
+              <h3 className="text-sage-500 text-xs font-semibold tracking-wider uppercase">People</h3>
+              <div className="border-vault-100 bg-vault-50 text-vault-800 rounded-lg border px-3 py-2 text-sm">
+                {asset.face_label || asset.face_group}
+                {asset.face_confidence ? (
+                  <span className="text-vault-600 ml-2 text-xs">
+                    {Math.round(asset.face_confidence * 100)}% match
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          )}
+
           {/* Business */}
           <div className="space-y-2">
             <h3 className="text-sage-500 text-xs font-semibold tracking-wider uppercase">Business</h3>

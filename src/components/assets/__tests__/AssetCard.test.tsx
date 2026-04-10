@@ -28,7 +28,7 @@ const mockAsset: Asset = {
   file_name: 'product-photo.jpg',
   original_filename: 'product-photo.jpg',
   file_path: 'user/photo.jpg',
-  file_size: 1048576, // 1 MB
+  file_size: 1048576,
   mime_type: 'image/jpeg',
   content_type: 'image',
   sha256_hash: 'abc123',
@@ -43,6 +43,9 @@ const mockAsset: Asset = {
   thumbnail_path: null,
   extracted_text: null,
   barcodes: null,
+  face_group: null,
+  face_label: null,
+  face_confidence: null,
   exif_data: null,
 }
 
@@ -54,18 +57,21 @@ describe('AssetCard', () => {
     vi.clearAllMocks()
   })
 
+  const renderCard = (asset: Asset, selected = false) =>
+    render(<AssetCard asset={asset} thumbUrl={null} selected={selected} onSelect={mockOnSelect} onClick={mockOnClick} />)
+
   it('renders the asset file name', () => {
-    render(<AssetCard asset={mockAsset} selected={false} onSelect={mockOnSelect} onClick={mockOnClick} />)
+    renderCard(mockAsset)
     expect(screen.getByText('product-photo.jpg')).toBeInTheDocument()
   })
 
   it('renders the formatted file size', () => {
-    render(<AssetCard asset={mockAsset} selected={false} onSelect={mockOnSelect} onClick={mockOnClick} />)
+    renderCard(mockAsset)
     expect(screen.getByText('1 MB')).toBeInTheDocument()
   })
 
   it('renders up to 3 tags', () => {
-    render(<AssetCard asset={mockAsset} selected={false} onSelect={mockOnSelect} onClick={mockOnClick} />)
+    renderCard(mockAsset)
     expect(screen.getByText('product')).toBeInTheDocument()
     expect(screen.getByText('grocery')).toBeInTheDocument()
     expect(screen.getByText('organic')).toBeInTheDocument()
@@ -73,52 +79,47 @@ describe('AssetCard', () => {
 
   it('shows +N overflow indicator when more than 3 tags', () => {
     const asset = { ...mockAsset, tags: ['a', 'b', 'c', 'd', 'e'] }
-    render(<AssetCard asset={asset} selected={false} onSelect={mockOnSelect} onClick={mockOnClick} />)
+    renderCard(asset)
     expect(screen.getByText('+2')).toBeInTheDocument()
   })
 
   it('calls onClick when card is clicked', async () => {
     const user = userEvent.setup()
-    render(<AssetCard asset={mockAsset} selected={false} onSelect={mockOnSelect} onClick={mockOnClick} />)
+    renderCard(mockAsset)
     await user.click(screen.getByText('product-photo.jpg'))
     expect(mockOnClick).toHaveBeenCalledTimes(1)
   })
 
   it('shows NS badge for natures business', () => {
-    render(<AssetCard asset={mockAsset} selected={false} onSelect={mockOnSelect} onClick={mockOnClick} />)
+    renderCard(mockAsset)
     expect(screen.getByText('NS')).toBeInTheDocument()
   })
 
   it('shows ADK badge for adk business', () => {
     const asset = { ...mockAsset, business: 'adk' }
-    render(<AssetCard asset={asset} selected={false} onSelect={mockOnSelect} onClick={mockOnClick} />)
+    renderCard(asset)
     expect(screen.getByText('ADK')).toBeInTheDocument()
   })
 
   it('shows Both badge for both business', () => {
     const asset = { ...mockAsset, business: 'both' }
-    render(<AssetCard asset={asset} selected={false} onSelect={mockOnSelect} onClick={mockOnClick} />)
+    renderCard(asset)
     expect(screen.getByText('Both')).toBeInTheDocument()
   })
 
   it('applies selected ring styling when selected', () => {
-    const { container } = render(
-      <AssetCard asset={mockAsset} selected={true} onSelect={mockOnSelect} onClick={mockOnClick} />,
-    )
+    const { container } = renderCard(mockAsset, true)
     expect(container.firstChild).toHaveClass('ring-2')
   })
 
   it('does not show file type icon for image when signed URL is available', async () => {
-    // After useEffect, image should show
-    render(<AssetCard asset={mockAsset} selected={false} onSelect={mockOnSelect} onClick={mockOnClick} />)
-    // Initially no image (URL not yet loaded), TypeIcon shown
-    // We don't need to test async loading here — just that the component renders
+    renderCard(mockAsset)
     expect(screen.getByText('product-photo.jpg')).toBeInTheDocument()
   })
 
   it('renders without tags gracefully', () => {
     const asset = { ...mockAsset, tags: null }
-    render(<AssetCard asset={asset} selected={false} onSelect={mockOnSelect} onClick={mockOnClick} />)
+    renderCard(asset)
     expect(screen.getByText('product-photo.jpg')).toBeInTheDocument()
   })
 })

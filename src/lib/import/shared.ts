@@ -152,7 +152,7 @@ export async function tusUpload(
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 
   return new Promise((resolve) => {
-    const upload = new tus.Upload(Readable.from(fileBody) as unknown as tus.Upload['file'], {
+    const upload = new tus.Upload(Readable.from(fileBody) as unknown as any, {
       endpoint: `${supabaseUrl}/storage/v1/upload/resumable`,
       retryDelays: [1000, 3000, 5000, 10000],
       headers: {
@@ -169,8 +169,8 @@ export async function tusUpload(
       },
       chunkSize: 6 * 1024 * 1024,
       uploadSize: fileSize,
-      onError(err) {
-        resolve({ error: err.message })
+      onError(err: unknown) {
+        resolve({ error: err instanceof Error ? err.message : 'Upload failed' })
       },
       onSuccess() {
         resolve({ error: null })

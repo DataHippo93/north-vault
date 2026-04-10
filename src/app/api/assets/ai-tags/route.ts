@@ -3,6 +3,9 @@ import { NextResponse, type NextRequest } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import sharp from 'sharp'
 
+const MIN_TAG_BATCH_INTERVAL_MS = 6100
+let lastTagRequestAt = 0
+
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
   const {
@@ -92,6 +95,13 @@ export async function POST(request: NextRequest) {
   if (!apiKey) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not configured on the server.' }, { status: 500 })
   }
+
+  const now = Date.now()
+  const elapsed = now - lastTagRequestAt
+  if (elapsed < MIN_TAG_BATCH_INTERVAL_MS) {
+    await new Promise((resolve) => setTimeout(resolve, MIN_TAG_BATCH_INTERVAL_MS - elapsed))
+  }
+  lastTagRequestAt = Date.now()
 
   const anthropic = new Anthropic({ apiKey })
 
