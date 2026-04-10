@@ -1,141 +1,27 @@
 'use client'
 
-import { useState, useEffect } from 'react'
 import Image from 'next/image'
-import { createClient } from '@/lib/supabase/client'
-import type { Asset, ContentType } from '@/types'
+import type { ContentType } from '@/types'
 import { formatFileSize } from '@/lib/utils/fileType'
 
+interface AssetCardData {
+  id: string
+  file_name: string
+  file_size: number
+  content_type: string
+  business: string
+  tags: string[] | null
+}
+
 interface Props {
-  asset: Asset
+  asset: AssetCardData
+  thumbUrl: string | null
   selected: boolean
   onSelect: (id: string, shiftKey: boolean) => void
   onClick: () => void
 }
 
-/** Extract a non-black frame from a video at ~2 seconds in */
-function extractVideoFrame(videoUrl: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const video = document.createElement('video')
-    video.crossOrigin = 'anonymous'
-    video.muted = true
-    video.preload = 'metadata'
-
-    const timeout = setTimeout(() => {
-      video.src = ''
-      resolve(null)
-    }, 15000)
-
-    video.onloadedmetadata = () => {
-      // Seek to 2 seconds or 10% of duration, whichever is less
-      video.currentTime = Math.min(2, video.duration * 0.1)
-    }
-
-    video.onseeked = () => {
-      clearTimeout(timeout)
-      try {
-        const canvas = document.createElement('canvas')
-        canvas.width = Math.min(400, video.videoWidth)
-        canvas.height = Math.round((canvas.width / video.videoWidth) * video.videoHeight)
-        const ctx = canvas.getContext('2d')
-        if (!ctx) {
-          resolve(null)
-          return
-        }
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-        // Check if frame is mostly black (first few frames often are)
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-        let brightness = 0
-        for (let i = 0; i < imageData.data.length; i += 16) {
-          brightness += imageData.data[i] + imageData.data[i + 1] + imageData.data[i + 2]
-        }
-        brightness /= (imageData.data.length / 16) * 3
-
-        if (brightness < 15 && video.currentTime < video.duration * 0.5) {
-          // Too dark — try further in
-          video.currentTime = Math.min(video.currentTime + 3, video.duration * 0.5)
-          return // onseeked will fire again
-        }
-
-        resolve(canvas.toDataURL('image/jpeg', 0.8))
-      } catch {
-        resolve(null)
-      }
-      video.src = ''
-    }
-
-    video.onerror = () => {
-      clearTimeout(timeout)
-      resolve(null)
-    }
-
-    video.src = videoUrl
-  })
-}
-
-export default function AssetCard({ asset, selected, onSelect, onClick }: Props) {
-  const supabase = createClient()
-  const [thumbUrl, setThumbUrl] = useState<string | null>(null)
-
-  useEffect(() => {
-    const isMedia = asset.content_type === 'image' || asset.content_type === 'video'
-    if (!isMedia && asset.content_type !== 'pdf' && asset.content_type !== 'document') return
-
-    async function loadThumb() {
-      // If a thumbnail already exists in the DB, sign and use it directly
-      if (asset.thumbnail_path) {
-        const { data } = await supabase.storage.from('northvault-assets').createSignedUrl(asset.thumbnail_path, 3600)
-        if (data?.signedUrl) {
-          setThumbUrl(data.signedUrl)
-          return
-        }
-      }
-
-      // No thumbnail yet — ask the API to generate one, then display it
-      try {
-        const res = await fetch('/api/assets/thumbnail', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ assetId: asset.id }),
-        })
-        if (res.ok) {
-          const data = await res.json()
-          if (data.signedUrl) {
-            setThumbUrl(data.signedUrl)
-            return
-          }
-        }
-      } catch {
-        // network error — fall through to fallback
-      }
-
-      // Fallback for images: show full image
-      if (asset.content_type === 'image') {
-        const path = asset.storage_path || asset.file_path
-        if (!path) return
-        const { data } = await supabase.storage.from('northvault-assets').createSignedUrl(path, 3600)
-        if (data?.signedUrl) setThumbUrl(data.signedUrl)
-      }
-
-      // Fallback for videos: extract a frame client-side using the browser
-      if (asset.content_type === 'video') {
-        const path = asset.storage_path || asset.file_path
-        if (!path) return
-        const { data } = await supabase.storage.from('northvault-assets').createSignedUrl(path, 3600)
-        if (!data?.signedUrl) return
-        try {
-          const dataUrl = await extractVideoFrame(data.signedUrl)
-          if (dataUrl) setThumbUrl(dataUrl)
-        } catch {
-          // Video may not be playable in browser — show type icon
-        }
-      }
-    }
-
-    void loadThumb()
-  }, [asset.id, asset.thumbnail_path, asset.storage_path, asset.file_path, asset.content_type])
-
+export default function AssetCard({ asset, thumbUrl, selected, onSelect, onClick }: Props) {
   return (
     <div
       className={`group relative cursor-pointer overflow-hidden rounded-xl border bg-white transition-all hover:shadow-md ${
@@ -152,6 +38,7 @@ export default function AssetCard({ asset, selected, onSelect, onClick }: Props)
             fill
             className="object-cover"
             sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
+            loading="lazy"
           />
         ) : (
           <TypeIcon type={asset.content_type as ContentType} />

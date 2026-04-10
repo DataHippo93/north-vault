@@ -14,6 +14,13 @@ interface Props {
   defaultBusiness: string | null
 }
 
+// Columns needed for the card grid — avoids fetching large text fields
+const GRID_COLUMNS =
+  'id, file_name, original_filename, file_path, file_size, mime_type, content_type, sha256_hash, business, uploaded_by, created_at, original_created_at, storage_path, storage_url, tags, notes, thumbnail_path, faces_scanned'
+
+// How many items to render at a time before "Load more"
+const PAGE_RENDER_SIZE = 100
+
 export default function LibraryClient({ userId: _userId, userRole, defaultBusiness }: Props) {
   const supabase = createClient()
   const [assets, setAssets] = useState<Asset[]>([])
@@ -35,6 +42,9 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
   const [bulkTagProgress, setBulkTagProgress] = useState<{ done: number; total: number } | null>(null)
   const [bulkDeleting, setBulkDeleting] = useState(false)
   const [queryError, setQueryError] = useState<string | null>(null)
+  const [totalCount, setTotalCount] = useState<number | null>(null)
+  const [thumbUrls, setThumbUrls] = useState<Record<string, string | null>>({})
+  const [renderLimit, setRenderLimit] = useState(PAGE_RENDER_SIZE)
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
@@ -69,7 +79,7 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
     }
 
     // No text search — use direct table query with filters
-    let query = supabase.schema('northvault').from('assets').select('*')
+    let query = supabase.schema('northvault').from('assets').select(GRID_COLUMNS)
 
     if (filters.contentTypes.length > 0) {
       query = query.in('content_type', filters.contentTypes)
@@ -113,12 +123,47 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
     }
 
     setAssets(allData)
+    setRenderLimit(PAGE_RENDER_SIZE)
     setLoading(false)
   }, [filters, sortBy, sortDir])
+
+  // Fetch total asset count (unfiltered)
+  useEffect(() => {
+    async function fetchTotalCount() {
+      const { count } = await supabase.schema('northvault').from('assets').select('id', { count: 'exact', head: true })
+      setTotalCount(count)
+    }
+    fetchTotalCount()
+  }, [])
 
   useEffect(() => {
     loadAssets()
   }, [loadAssets])
+
+  // Batch-load thumbnail URLs for currently visible assets
+  useEffect(() => {
+    if (assets.length === 0) return
+    const visible = assets.slice(0, renderLimit)
+    const needThumbs = visible.filter((a) => !(a.id in thumbUrls)).map((a) => a.id)
+    if (needThumbs.length === 0) return
+
+    async function loadThumbs() {
+      try {
+        const res = await fetch('/api/assets/batch-thumbnails', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetIds: needThumbs }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setThumbUrls((prev) => ({ ...prev, ...data.urls }))
+        }
+      } catch {
+        // Non-fatal — cards will show type icons
+      }
+    }
+    loadThumbs()
+  }, [assets, renderLimit])
 
   async function handleDeleteAsset(asset: Asset) {
     if (!confirm(`Delete "${asset.file_name}"? This cannot be undone.`)) return
@@ -721,7 +766,11 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
 
       {/* Asset count */}
       <div className="text-sage-500 text-sm">
-        {loading ? 'Loading...' : `${assets.length} asset${assets.length !== 1 ? 's' : ''}`}
+        {loading
+          ? 'Loading...'
+          : totalCount !== null && totalCount !== assets.length
+            ? `${assets.length} shown of ${totalCount.toLocaleString()} total`
+            : `${assets.length.toLocaleString()} asset${assets.length !== 1 ? 's' : ''}`}
       </div>
 
       {/* Grid/List view */}
@@ -741,36 +790,62 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
           <p className="text-sm">Upload some files to get started.</p>
         </div>
       ) : view === 'grid' ? (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {assets.map((asset) => (
-            <AssetCard
-              key={asset.id}
-              asset={asset}
-              selected={selectedIds.has(asset.id)}
-              onClick={() => setSelectedAsset(asset)}
-              onSelect={handleSelect}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {assets.map((asset) => (
-            <div
-              key={asset.id}
-              className="border-sage-200 flex items-center justify-between rounded-lg border bg-white p-3"
-            >
-              <div className="min-w-0">
-                <div className="text-sage-900 truncate font-medium">{asset.file_name}</div>
-                <div className="text-sage-500 text-xs">
-                  {formatFileSize(asset.file_size)} · {asset.content_type}
-                </div>
-              </div>
-              <button onClick={() => setSelectedAsset(asset)} className="text-vault-700 hover:text-vault-900 text-sm">
-                View
+        <>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+            {assets.slice(0, renderLimit).map((asset) => (
+              <AssetCard
+                key={asset.id}
+                asset={asset}
+                thumbUrl={thumbUrls[asset.id] ?? null}
+                selected={selectedIds.has(asset.id)}
+                onClick={() => setSelectedAsset(asset)}
+                onSelect={handleSelect}
+              />
+            ))}
+          </div>
+          {renderLimit < assets.length && (
+            <div className="flex justify-center pt-4">
+              <button
+                onClick={() => setRenderLimit((l) => l + PAGE_RENDER_SIZE)}
+                className="border-sage-300 text-sage-700 hover:bg-sage-100 rounded-lg border bg-white px-6 py-2.5 text-sm font-medium transition-colors"
+              >
+                Load more ({Math.min(PAGE_RENDER_SIZE, assets.length - renderLimit)} of{' '}
+                {(assets.length - renderLimit).toLocaleString()} remaining)
               </button>
             </div>
-          ))}
-        </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="space-y-2">
+            {assets.slice(0, renderLimit).map((asset) => (
+              <div
+                key={asset.id}
+                className="border-sage-200 flex items-center justify-between rounded-lg border bg-white p-3"
+              >
+                <div className="min-w-0">
+                  <div className="text-sage-900 truncate font-medium">{asset.file_name}</div>
+                  <div className="text-sage-500 text-xs">
+                    {formatFileSize(asset.file_size)} · {asset.content_type}
+                  </div>
+                </div>
+                <button onClick={() => setSelectedAsset(asset)} className="text-vault-700 hover:text-vault-900 text-sm">
+                  View
+                </button>
+              </div>
+            ))}
+          </div>
+          {renderLimit < assets.length && (
+            <div className="flex justify-center pt-4">
+              <button
+                onClick={() => setRenderLimit((l) => l + PAGE_RENDER_SIZE)}
+                className="border-sage-300 text-sage-700 hover:bg-sage-100 rounded-lg border bg-white px-6 py-2.5 text-sm font-medium transition-colors"
+              >
+                Load more ({(assets.length - renderLimit).toLocaleString()} remaining)
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {selectedAsset && (
