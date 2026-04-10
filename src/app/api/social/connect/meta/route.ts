@@ -34,7 +34,10 @@ export async function GET(request: NextRequest) {
   const authUrl = getAuthUrl(redirectUri, state)
 
   // Set cookies directly on the redirect response so Set-Cookie headers are included
-  const response = NextResponse.redirect(authUrl)
+  // Use 307 (not 302) and no-store to prevent browser caching the redirect
+  const response = NextResponse.redirect(authUrl, 307)
+  response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  response.headers.set('Pragma', 'no-cache')
 
   const cookieOptions = {
     httpOnly: true,
