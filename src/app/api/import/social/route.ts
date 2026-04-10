@@ -239,9 +239,20 @@ export async function POST(request: NextRequest) {
                 .select('id')
                 .single()
 
-              if (dbError || !asset) {
+              if (dbError) {
+                // Handle race condition: another concurrent task inserted the same hash
+                if (dbError.code === '23505' && dbError.message?.includes('sha256_hash')) {
+                  results.duplicates++
+                  send('file', { name: displayName, status: 'duplicate', duplicateOf: '(concurrent)' })
+                  return
+                }
                 results.errors++
-                send('file', { name: displayName, status: 'error', error: dbError?.message ?? 'Insert failed' })
+                send('file', { name: displayName, status: 'error', error: dbError.message ?? 'Insert failed' })
+                return
+              }
+              if (!asset) {
+                results.errors++
+                send('file', { name: displayName, status: 'error', error: 'Insert returned no data' })
                 return
               }
 
