@@ -143,8 +143,17 @@ export async function POST(request: NextRequest) {
                 return
               }
 
-              // Upload via TUS
-              const ext = creative.name.split('.').pop() ?? (creative.mediaType === 'video' ? 'mp4' : 'jpg')
+              // Upload via TUS — use mime type for extension since creative names aren't real filenames
+              const mimeExt: Record<string, string> = {
+                'image/jpeg': 'jpg',
+                'image/png': 'png',
+                'image/webp': 'webp',
+                'image/gif': 'gif',
+                'video/mp4': 'mp4',
+                'video/quicktime': 'mov',
+                'video/webm': 'webm',
+              }
+              const ext = mimeExt[creative.mimeType] ?? (creative.mediaType === 'video' ? 'mp4' : 'jpg')
               const storagePath = `import/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
 
               send('progress', { current: displayName, phase: 'uploading' })

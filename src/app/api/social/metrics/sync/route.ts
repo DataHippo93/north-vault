@@ -2,7 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createClient as createRawClient } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
 import { decrypt } from '@/lib/utils/encryption'
-import { fetchInsights } from '@/lib/social/meta'
+import { fetchInsights, fetchCreativeToAdMap } from '@/lib/social/meta'
 import { upsertMetrics } from '@/lib/social/metrics'
 
 export const runtime = 'nodejs'
@@ -91,22 +91,44 @@ export async function POST(request: NextRequest) {
           return
         }
 
-        send('status', { message: `Syncing metrics for ${creatives.length} creatives...` })
+        // Backfill missing ad IDs by fetching creative→ad mapping from Meta
+        const creativesWithoutAdId = creatives.filter((c) => !c.platform_ad_id)
+        if (creativesWithoutAdId.length > 0) {
+          send('status', {
+            message: `${creativesWithoutAdId.length} creatives missing ad IDs. Fetching creative→ad mapping from Meta...`,
+          })
+          const creativeToAd = await fetchCreativeToAdMap(conn.account_id, accessToken)
+          send('status', { message: `Found ${creativeToAd.size} creative→ad mappings` })
 
-        // Collect ad IDs for filtering
+          for (const creative of creativesWithoutAdId) {
+            const adId = creativeToAd.get(creative.platform_creative_id)
+            if (adId) {
+              creative.platform_ad_id = adId
+              // Persist the backfill
+              await serviceClient
+                .schema('northvault')
+                .from('social_creatives')
+                .update({ platform_ad_id: adId })
+                .eq('id', creative.id)
+            }
+          }
+        }
+
         const adIds = creatives.map((c) => c.platform_ad_id).filter((id): id is string => id !== null)
+        send('status', {
+          message: `Syncing metrics for ${creatives.length} creatives (${adIds.length} with ad IDs)...`,
+        })
 
-        // Fetch insights from Meta
-        const insightsMap = await fetchInsights(
-          conn.account_id,
-          accessToken,
-          from,
-          to,
-          adIds.length > 0 ? adIds : undefined,
-        )
+        // Fetch ALL insights for the account
+        const insightsMap = await fetchInsights(conn.account_id, accessToken, from, to)
+
+        send('status', {
+          message: `Fetched insights for ${insightsMap.size} ads from Meta. Matching to creatives...`,
+        })
 
         let totalUpserted = 0
         let processed = 0
+        let matched = 0
 
         for (const creative of creatives) {
           processed++
@@ -119,10 +141,15 @@ export async function POST(request: NextRequest) {
           // Match by ad_id
           const adMetrics = creative.platform_ad_id ? insightsMap.get(creative.platform_ad_id) : undefined
           if (adMetrics && adMetrics.length > 0) {
+            matched++
             const count = await upsertMetrics(creative.id, adMetrics, serviceClient)
             totalUpserted += count
           }
         }
+
+        send('status', {
+          message: `Matched ${matched}/${creatives.length} creatives to ad insights`,
+        })
 
         // Update sync log
         if (syncLog) {
