@@ -175,6 +175,28 @@ async function fetchAdForCreative(
   return data.data?.[0] ?? null
 }
 
+/** Fetch all ads in an account and return a map of creative_id → ad_id */
+export async function fetchCreativeToAdMap(adAccountId: string, accessToken: string): Promise<Map<string, string>> {
+  const map = new Map<string, string>()
+  let url: string | null =
+    `${GRAPH_BASE}/${adAccountId}/ads?fields=id,creative{id}&limit=100&access_token=${accessToken}`
+
+  while (url) {
+    const res = await fetch(url)
+    if (!res.ok) break
+
+    const data: { data?: { id: string; creative?: { id: string } }[]; paging?: { next?: string } } = await res.json()
+    for (const ad of data.data || []) {
+      if (ad.creative?.id) {
+        map.set(ad.creative.id, ad.id)
+      }
+    }
+    url = data.paging?.next ?? null
+  }
+
+  return map
+}
+
 /** Fetch daily insights for an ad over a date range */
 export async function fetchInsights(
   adAccountId: string,
@@ -199,7 +221,10 @@ export async function fetchInsights(
 
   while (url) {
     const res: Response = await fetch(url)
-    if (!res.ok) break
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => 'unknown')
+      throw new Error(`Meta Insights API error ${res.status}: ${errBody}`)
+    }
 
     interface InsightRow {
       ad_id: string
@@ -215,7 +240,8 @@ export async function fetchInsights(
     const rows: InsightRow[] = data.data || []
 
     for (const row of rows) {
-      if (adIds && !adIds.includes(row.ad_id)) continue
+      // If adIds filter provided, skip non-matching rows
+      if (adIds && adIds.length > 0 && !adIds.includes(row.ad_id)) continue
 
       const conversions = (row.actions || [])
         .filter((a) => a.action_type === 'offsite_conversion' || a.action_type === 'lead')

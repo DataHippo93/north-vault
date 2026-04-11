@@ -182,7 +182,7 @@ export default function SocialClient() {
         </div>
         <div className="flex flex-wrap gap-3">
           <a
-            href={`/api/social/connect/meta?business=${business}`}
+            href={`/api/social/connect/meta?business=${business}&t=${Date.now()}`}
             className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700"
           >
             <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
