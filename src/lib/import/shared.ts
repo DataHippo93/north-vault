@@ -9,6 +9,13 @@ import * as tus from 'tus-js-client'
 import { Readable } from 'stream'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
+type TusUploadCtor = new (
+  file: Blob | File | Readable,
+  options: Record<string, unknown>,
+) => {
+  start: () => void
+}
+
 // Images above this skip AI tagging
 const MAX_VISION_BYTES = 50 * 1024 * 1024
 
@@ -150,9 +157,10 @@ export async function tusUpload(
   serviceRoleKey: string,
 ): Promise<{ error: string | null }> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+  const normalizedObjectPath = objectPath.replace(/^\/+/, '').replace(/^import\//, 'social-import/')
 
   return new Promise((resolve) => {
-    const upload = new tus.Upload(Readable.from(fileBody) as unknown as any, {
+    const upload = new (tus as unknown as { Upload: TusUploadCtor }).Upload(Readable.from(fileBody), {
       endpoint: `${supabaseUrl}/storage/v1/upload/resumable`,
       retryDelays: [1000, 3000, 5000, 10000],
       headers: {
@@ -163,7 +171,7 @@ export async function tusUpload(
       removeFingerprintOnSuccess: true,
       metadata: {
         bucketName: bucket,
-        objectName: objectPath,
+        objectName: normalizedObjectPath,
         contentType,
         cacheControl: '3600',
       },
