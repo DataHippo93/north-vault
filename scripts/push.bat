@@ -22,5 +22,8 @@ echo === commit ===
 echo === push ===
 if "%GITHUB_PAT%"=="" (echo GITHUB_PAT missing & exit /b 1)
 set "PUSH_URL=https://x-access-token:%GITHUB_PAT%@github.com/DataHippo93/north-vault"
+echo === pull --rebase ===
+"%GITEXE%" pull --rebase "%PUSH_URL%" main
+echo === push ===
 "%GITEXE%" push "%PUSH_URL%" HEAD:main
 exit /b %ERRORLEVEL%
