@@ -1,88 +1,99 @@
-import { createClient } from '@/lib/supabase/server'
-import { createClient as createRawClient } from '@supabase/supabase-js'
-import { NextResponse, type NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { createAdminClient } from '@/lib/supabase/admin'
+import { requireAuth } from '@/lib/api-auth'
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms),
+    ),
+  ])
+}
 
 export async function POST(request: NextRequest) {
-  // Verify caller is admin
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const { data: profile } = await supabase
-    .schema('northvault')
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single()
-
-  if (profile?.role !== 'admin') {
-    return NextResponse.json({ error: 'Admin access required' }, { status: 403 })
-  }
-
-  const { email, role = 'viewer' } = await request.json()
-
-  if (!email) {
-    return NextResponse.json({ error: 'Email is required' }, { status: 400 })
-  }
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!supabaseUrl || !serviceKey) {
-    return NextResponse.json({ error: 'Server configuration error: missing Supabase credentials' }, { status: 500 })
-  }
-
-  const serviceClient = createRawClient(supabaseUrl, serviceKey)
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://northvault.adkfragrance.com'
-
   try {
-    // createUser triggers northvault.handle_new_user() which auto-creates the profile
-    const { data, error } = await serviceClient.auth.admin.createUser({
-      email,
-      email_confirm: true,
-      user_metadata: { role, full_name: '' },
-    })
+    const { error: authError } = await requireAuth({ role: 'admin' })
+    if (authError) return authError
 
-    if (error) {
-      console.error('Create user error:', error)
-      return NextResponse.json({ error: error.message }, { status: 400 })
+    const { email, role = 'viewer', fullName = '' } = await request.json()
+
+    if (!email) {
+      return NextResponse.json({ error: 'Email is required' }, { status: 400 })
     }
 
-    if (!data.user) {
+    if (!['viewer', 'admin'].includes(role)) {
+      return NextResponse.json({ error: 'Invalid role' }, { status: 400 })
+    }
+
+    const adminClient = createAdminClient()
+    const siteUrl =
+      process.env.SITE_URL ||
+      process.env.NEXT_PUBLIC_SITE_URL ||
+      'https://northvault.adkfragrance.com'
+
+    // Send invite email via Supabase Auth with 8s timeout
+    let inviteData: Awaited<ReturnType<typeof adminClient.auth.admin.inviteUserByEmail>>['data']
+    let inviteError: Awaited<ReturnType<typeof adminClient.auth.admin.inviteUserByEmail>>['error']
+    try {
+      const result = await withTimeout(
+        adminClient.auth.admin.inviteUserByEmail(email, {
+          redirectTo: `${siteUrl}/auth/callback`,
+          data: {
+            full_name: fullName,
+            role,
+          },
+        }),
+        8000,
+        'Supabase inviteUserByEmail',
+      )
+      inviteData = result.data
+      inviteError = result.error
+    } catch {
+      return NextResponse.json(
+        {
+          error:
+            'Invite request timed out. This may be due to email rate limits. Please try again later.',
+        },
+        { status: 503 },
+      )
+    }
+
+    if (inviteError) {
+      console.error('Supabase invite error:', inviteError)
+      return NextResponse.json({ error: inviteError.message }, { status: 400 })
+    }
+
+    if (!inviteData?.user) {
       return NextResponse.json({ error: 'Failed to create user' }, { status: 500 })
     }
 
-    // Create NorthVault profile with the actual role
-    await serviceClient.schema('northvault').from('profiles').upsert(
-      {
-        id: data.user.id,
-        email,
-        role,
-      },
-      { onConflict: 'id' },
-    )
+    // Upsert the NorthVault profile
+    const { error: dbError } = await adminClient
+      .schema('northvault')
+      .from('profiles')
+      .upsert(
+        {
+          id: inviteData.user.id,
+          email,
+          name: fullName || null,
+          role,
+          is_active: true,
+        },
+        { onConflict: 'id' },
+      )
 
-    // Send password reset email so the invited user can set their password
-    const { error: resetError } = await serviceClient.auth.resetPasswordForEmail(email, {
-      redirectTo: `${siteUrl}/auth/callback?next=/auth/set-password`,
-    })
-
-    if (resetError) {
-      console.error('Reset email error:', resetError)
-      return NextResponse.json({
-        success: true,
-        userId: data.user.id,
-        warning: 'User created but invite email failed. Use password reset to send them a link.',
-      })
+    if (dbError) {
+      console.error('Failed to sync user to profiles table:', dbError)
     }
 
-    return NextResponse.json({ success: true, userId: data.user.id })
+    return NextResponse.json({
+      success: true,
+      userId: inviteData.user.id,
+      message: `Invite sent to ${email}`,
+    })
   } catch (err) {
-    console.error('Invite exception:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Unknown error' }, { status: 500 })
+    console.error('Invite error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

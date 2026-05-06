@@ -23,7 +23,11 @@ export default function LoginPage() {
 
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) {
-      setError(error.message)
+      if (error.message?.toLowerCase().includes('ban')) {
+        setError('Your account has been deactivated. Contact an admin.')
+      } else {
+        setError(error.message)
+      }
       setLoading(false)
     } else {
       router.push('/library')

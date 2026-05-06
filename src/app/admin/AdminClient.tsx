@@ -9,6 +9,7 @@ interface Profile {
   name: string | null
   role: string
   business: string | null
+  is_active: boolean
   created_at: string
 }
 
@@ -24,6 +25,13 @@ export default function AdminClient({ currentUserId, users: initialUsers }: Prop
   const [inviting, setInviting] = useState(false)
   const [inviteResult, setInviteResult] = useState<{ success?: string; error?: string } | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
+  const [faceScanning, setFaceScanning] = useState(false)
+  const [faceScanProgress, setFaceScanProgress] = useState<{
+    processed: number
+    faces: number
+    remaining?: number
+  } | null>(null)
 
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault()
@@ -63,6 +71,75 @@ export default function AdminClient({ currentUserId, users: initialUsers }: Prop
       }
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  async function handleScanAllFaces() {
+    if (faceScanning) return
+    setFaceScanning(true)
+    setFaceScanProgress({ processed: 0, faces: 0 })
+
+    try {
+      const res = await fetch('/api/admin/face-scan-all', { method: 'POST' })
+      if (!res.ok || !res.body) {
+        alert('Failed to start face scan')
+        setFaceScanning(false)
+        return
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6))
+              if (data.processed !== undefined) {
+                setFaceScanProgress({ processed: data.processed, faces: data.totalFaces ?? 0 })
+              }
+              if (data.remaining !== undefined) {
+                setFaceScanProgress((prev) => ({ ...prev!, remaining: data.remaining }))
+              }
+            } catch {
+              // ignore parse errors
+            }
+          }
+        }
+      }
+    } catch (err) {
+      alert(`Face scan error: ${err instanceof Error ? err.message : 'Unknown'}`)
+    } finally {
+      setFaceScanning(false)
+    }
+  }
+
+  async function handleToggleActive(userId: string, isActive: boolean) {
+    const action = isActive ? 'deactivate' : 'reactivate'
+    if (!confirm(`${isActive ? 'Deactivate' : 'Reactivate'} this user?`)) return
+    setTogglingId(userId)
+    try {
+      const res = await fetch(`/api/admin/${action}-user`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      })
+      if (res.ok) {
+        setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, is_active: !isActive } : u)))
+      } else {
+        const data = await res.json()
+        alert(data.error ?? `Failed to ${action} user`)
+      }
+    } finally {
+      setTogglingId(null)
     }
   }
 
@@ -120,6 +197,26 @@ export default function AdminClient({ currentUserId, users: initialUsers }: Prop
             {inviteResult.error}
           </p>
         )}
+      </div>
+
+      {/* Face Scan */}
+      <div className="border-sage-200 rounded-xl border bg-white p-6 shadow-sm">
+        <h2 className="text-sage-900 mb-4 text-base font-semibold">Face Recognition</h2>
+        <div className="flex items-center gap-4">
+          <button
+            onClick={handleScanAllFaces}
+            disabled={faceScanning}
+            className="bg-vault-600 hover:bg-vault-700 rounded-lg px-6 py-2 text-sm font-medium text-white shadow-sm transition-colors disabled:opacity-50"
+          >
+            {faceScanning ? 'Scanning...' : 'Scan All Faces'}
+          </button>
+          {faceScanProgress && (
+            <span className="text-sage-600 text-sm">
+              {faceScanProgress.processed} processed, {faceScanProgress.faces} faces found
+              {faceScanProgress.remaining !== undefined && `, ${faceScanProgress.remaining} remaining`}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Tools */}
@@ -181,6 +278,7 @@ export default function AdminClient({ currentUserId, users: initialUsers }: Prop
               <th className="text-sage-600 px-6 py-3 text-left font-medium">Email</th>
               <th className="text-sage-600 hidden px-6 py-3 text-left font-medium sm:table-cell">Joined</th>
               <th className="text-sage-600 px-6 py-3 text-left font-medium">Role</th>
+              <th className="text-sage-600 px-6 py-3 text-left font-medium">Status</th>
               <th className="px-6 py-3" />
             </tr>
           </thead>
@@ -213,15 +311,37 @@ export default function AdminClient({ currentUserId, users: initialUsers }: Prop
                     </select>
                   )}
                 </td>
+                <td className="px-6 py-4">
+                  {user.id !== currentUserId && (
+                    <span
+                      className={`rounded px-2 py-1 text-xs font-medium ${user.is_active ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}
+                    >
+                      {user.is_active ? 'Active' : 'Deactivated'}
+                    </span>
+                  )}
+                </td>
                 <td className="px-6 py-4 text-right">
                   {user.id !== currentUserId && (
-                    <button
-                      onClick={() => handleDeleteUser(user.id, user.email)}
-                      disabled={deletingId === user.id}
-                      className="text-xs text-red-400 transition-colors hover:text-red-600 disabled:opacity-40"
-                    >
-                      {deletingId === user.id ? 'Deleting…' : 'Delete'}
-                    </button>
+                    <div className="flex items-center justify-end gap-3">
+                      <button
+                        onClick={() => handleToggleActive(user.id, user.is_active)}
+                        disabled={togglingId === user.id}
+                        className={`text-xs transition-colors disabled:opacity-40 ${user.is_active ? 'text-amber-500 hover:text-amber-700' : 'text-green-500 hover:text-green-700'}`}
+                      >
+                        {togglingId === user.id
+                          ? '...'
+                          : user.is_active
+                            ? 'Deactivate'
+                            : 'Reactivate'}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteUser(user.id, user.email)}
+                        disabled={deletingId === user.id}
+                        className="text-xs text-red-400 transition-colors hover:text-red-600 disabled:opacity-40"
+                      >
+                        {deletingId === user.id ? 'Deleting…' : 'Delete'}
+                      </button>
+                    </div>
                   )}
                 </td>
               </tr>

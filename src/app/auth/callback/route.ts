@@ -1,40 +1,117 @@
-import { createClient } from '@/lib/supabase/server'
-import { NextResponse, type NextRequest } from 'next/server'
+import { createServerClient } from '@supabase/ssr'
+import { NextRequest, NextResponse } from 'next/server'
+
+/**
+ * Auth callback handler for Supabase PKCE and OTP flows.
+ *
+ * Two token formats arrive here depending on how Supabase sends the link:
+ *
+ * 1. PKCE code flow (`?code=xxx`): exchange the code for a session server-side
+ *    so that auth cookies are set on the response before redirecting.
+ *
+ * 2. OTP / token-hash flow (`?token_hash=xxx&type=invite|recovery|...`):
+ *    call verifyOtp server-side so the session is established and cookies are
+ *    written before redirecting. Do NOT just forward the token_hash to the
+ *    client — verifyOtp consumes the one-time token; forwarding it to the
+ *    browser causes the browser to attempt a second verification which fails
+ *    with otp_expired.
+ */
+
+function buildServerClient(request: NextRequest, responseRef: { value: NextResponse }) {
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll()
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
+          responseRef.value = NextResponse.next({ request })
+          cookiesToSet.forEach(({ name, value, options }) =>
+            responseRef.value.cookies.set(name, value, options),
+          )
+        },
+      },
+    },
+  )
+}
+
+/**
+ * Copy auth cookies from a source response (where Supabase wrote them) onto a
+ * redirect response, preserving all original cookie options.
+ */
+function copyAuthCookies(source: NextResponse, target: NextResponse): NextResponse {
+  source.cookies.getAll().forEach((cookie) => {
+    const { name, value, ...options } = cookie
+    target.cookies.set(name, value, options)
+  })
+  return target
+}
 
 export async function GET(request: NextRequest) {
-  const { searchParams, origin } = new URL(request.url)
-  const code = searchParams.get('code')
-  const token_hash = searchParams.get('token_hash')
-  const type = searchParams.get('type')
-  const next = searchParams.get('next') ?? '/library'
+  const requestUrl = new URL(request.url)
+  const code = requestUrl.searchParams.get('code')
+  const tokenHash = requestUrl.searchParams.get('token_hash')
+  const type = requestUrl.searchParams.get('type') as string | null
+  const next = requestUrl.searchParams.get('next') ?? '/library'
+  const origin = requestUrl.origin
 
-  const supabase = await createClient()
+  // ── PKCE code flow ──────────────────────────────────────────────────────────
+  if (code) {
+    const responseRef = { value: NextResponse.next({ request }) }
+    const supabase = buildServerClient(request, responseRef)
 
-  // Handle invite / magic link (token_hash flow)
-  if (token_hash && type) {
+    const { error } = await supabase.auth.exchangeCodeForSession(code)
+
+    if (!error) {
+      if (type === 'recovery') {
+        return copyAuthCookies(
+          responseRef.value,
+          NextResponse.redirect(new URL('/auth/set-password', origin)),
+        )
+      }
+      if (type === 'invite' || type === 'signup' || type === 'magiclink') {
+        return copyAuthCookies(
+          responseRef.value,
+          NextResponse.redirect(new URL('/auth/set-password', origin)),
+        )
+      }
+      return copyAuthCookies(
+        responseRef.value,
+        NextResponse.redirect(new URL(next, origin)),
+      )
+    }
+    // Code exchange failed — fall through
+  }
+
+  // ── OTP / token-hash flow ───────────────────────────────────────────────────
+  if (tokenHash && type) {
+    const responseRef = { value: NextResponse.next({ request }) }
+    const supabase = buildServerClient(request, responseRef)
+
     const { error } = await supabase.auth.verifyOtp({
-      type: type as 'invite' | 'recovery' | 'email' | 'signup' | 'magiclink' | 'email_change',
-      token_hash,
+      token_hash: tokenHash,
+      type: type as 'invite' | 'recovery' | 'email' | 'magiclink' | 'signup',
     })
 
     if (!error) {
-      if (type === 'invite' || type === 'recovery') {
-        return NextResponse.redirect(`${origin}/auth/set-password`)
+      if (type === 'recovery') {
+        return copyAuthCookies(
+          responseRef.value,
+          NextResponse.redirect(new URL('/auth/set-password', origin)),
+        )
       }
-      return NextResponse.redirect(`${origin}${next}`)
+      // invite, signup, magiclink, email → set-password
+      return copyAuthCookies(
+        responseRef.value,
+        NextResponse.redirect(new URL('/auth/set-password', origin)),
+      )
     }
-
-    return NextResponse.redirect(`${origin}/auth/error?message=${encodeURIComponent(error.message)}`)
+    // verifyOtp failed — fall through to login
   }
 
-  // Handle OAuth / PKCE code flow
-  if (code) {
-    const { error } = await supabase.auth.exchangeCodeForSession(code)
-    if (!error) {
-      return NextResponse.redirect(`${origin}${next}`)
-    }
-    return NextResponse.redirect(`${origin}/auth/error?message=${encodeURIComponent(error.message)}`)
-  }
-
-  return NextResponse.redirect(`${origin}/auth/error?message=Missing+auth+parameters`)
+  // Fallback: redirect to login
+  return NextResponse.redirect(new URL('/auth/login', origin))
 }

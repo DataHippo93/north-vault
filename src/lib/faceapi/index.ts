@@ -1,112 +1,115 @@
+/**
+ * Face detection + 128-d descriptor extraction using face-api.js.
+ *
+ * Runs server-side via node-canvas. Replaces the prior Azure Face API
+ * integration, which is gated behind Microsoft Limited Access for
+ * recognition_04 / faceId features and was returning HTTP 403. face-api.js
+ * gives us:
+ *   - real, stable 128-d face embeddings (cosine similarity works)
+ *   - no external API, no rate limits, no approval gate
+ *   - models ship with the build (~7 MB total)
+ *
+ * If the models aren't on disk (download-face-models.sh failed), detectFaces
+ * throws FaceModelsUnavailableError so callers can record face_scan_error
+ * instead of silently flagging the asset scanned.
+ */
 import sharp from 'sharp'
+import { loadFaceApi, modelsAvailable } from './loader'
+import * as nodeCanvas from 'canvas'
 
-const MAX_IMAGE_DIM = 1200
-const MAX_IMAGE_BYTES = 6 * 1024 * 1024 // Azure Face API limit: 6 MB
+const MAX_IMAGE_DIM = 1280
+const TINY_FD_INPUT = 416
+const TINY_FD_THRESHOLD = 0.5
+const CROP_PAD = 0.2
 
 export interface DetectedFace {
-  /** Bounding box as fractions (0-1) of image dimensions */
+  /** Bounding box as fractions (0-1) of the original image dimensions */
   box: { x: number; y: number; width: number; height: number }
+  /** Detector confidence in (0,1] */
   confidence: number
-  /** 128-dimensional face descriptor (placeholder — Azure returns faceId for grouping) */
+  /** 128-d L2-normalized face descriptor from face_recognition_model */
   descriptor: number[]
-  /** Pre-cropped face thumbnail (150x150 JPEG buffer) */
+  /** Pre-cropped 150x150 JPEG of the face for thumbnails */
   cropBuffer: Buffer
 }
 
-/**
- * Detect all faces in an image buffer using Azure Face API.
- * Returns detected faces with bounding boxes, embeddings, and crop thumbnails.
- *
- * Azure Free tier: 30 calls/minute, 30K/month.
- */
+export class FaceModelsUnavailableError extends Error {
+  constructor(message = 'Face models are not installed on this server') {
+    super(message)
+    this.name = 'FaceModelsUnavailableError'
+  }
+}
+
+export function faceModelsAvailable(): boolean {
+  return modelsAvailable()
+}
+
 export async function detectFaces(imageBuffer: Buffer): Promise<DetectedFace[]> {
-  const endpoint = process.env.AZURE_FACE_ENDPOINT
-  const key = process.env.AZURE_FACE_KEY
-  if (!endpoint || !key) throw new Error('AZURE_FACE_ENDPOINT and AZURE_FACE_KEY must be set')
-
-  // Resize image to fit Azure limits (6MB max, reasonable dimensions)
-  const metadata = await sharp(imageBuffer).metadata()
-  const imgWidth = metadata.width ?? 1
-  const imgHeight = metadata.height ?? 1
-
-  let processed = imageBuffer
-  let procWidth = imgWidth
-  let procHeight = imgHeight
-
-  // Resize if too large
-  if (imgWidth > MAX_IMAGE_DIM || imgHeight > MAX_IMAGE_DIM || imageBuffer.length > MAX_IMAGE_BYTES) {
-    const resized = sharp(imageBuffer).resize({
-      width: MAX_IMAGE_DIM,
-      height: MAX_IMAGE_DIM,
-      fit: 'inside',
-      withoutEnlargement: true,
-    })
-    processed = await resized.jpeg({ quality: 85 }).toBuffer()
-    const resMeta = await sharp(processed).metadata()
-    procWidth = resMeta.width ?? imgWidth
-    procHeight = resMeta.height ?? imgHeight
-
-    // If still too large, reduce quality further
-    if (processed.length > MAX_IMAGE_BYTES) {
-      processed = await sharp(imageBuffer)
-        .resize({ width: 800, height: 800, fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 70 })
-        .toBuffer()
-      const resMeta2 = await sharp(processed).metadata()
-      procWidth = resMeta2.width ?? imgWidth
-      procHeight = resMeta2.height ?? imgHeight
-    }
+  if (!modelsAvailable()) {
+    throw new FaceModelsUnavailableError()
   }
 
-  // Call Azure Face API — detect with recognition model for embeddings
-  const url = `${endpoint}/face/v1.0/detect?returnFaceId=true&returnFaceLandmarks=false&recognitionModel=recognition_04&detectionModel=detection_03`
+  const faceapi = await loadFaceApi()
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Ocp-Apim-Subscription-Key': key,
-      'Content-Type': 'application/octet-stream',
-    },
-    body: new Uint8Array(processed),
+  const meta = await sharp(imageBuffer).metadata()
+  const origWidth = meta.width ?? 0
+  const origHeight = meta.height ?? 0
+  if (!origWidth || !origHeight) return []
+
+  const tooBig = origWidth > MAX_IMAGE_DIM || origHeight > MAX_IMAGE_DIM
+  const processed = tooBig
+    ? await sharp(imageBuffer)
+        .rotate()
+        .resize({ width: MAX_IMAGE_DIM, height: MAX_IMAGE_DIM, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 90 })
+        .toBuffer()
+    : await sharp(imageBuffer).rotate().jpeg({ quality: 92 }).toBuffer()
+
+  const procMeta = await sharp(processed).metadata()
+  const procWidth = procMeta.width ?? origWidth
+  const procHeight = procMeta.height ?? origHeight
+
+  const img = await nodeCanvas.loadImage(processed)
+  const detectorOpts = new faceapi.TinyFaceDetectorOptions({
+    inputSize: TINY_FD_INPUT,
+    scoreThreshold: TINY_FD_THRESHOLD,
   })
 
-  if (res.status === 429) {
-    // Rate limited — propagate so caller can back off
-    const retryAfter = res.headers.get('Retry-After') || '60'
-    throw new Error(`RATE_LIMITED:${retryAfter}`)
-  }
+  // face-api.js typings expect HTMLImageElement; node-canvas Image is
+  // structurally compatible at runtime.
+  const results = await faceapi
+    .detectAllFaces(img as unknown as HTMLImageElement, detectorOpts)
+    .withFaceLandmarks()
+    .withFaceDescriptors()
 
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Azure Face API error ${res.status}: ${err}`)
-  }
+  if (!results.length) return []
 
-  interface AzureFace {
-    faceId: string
-    faceRectangle: { top: number; left: number; width: number; height: number }
-  }
-  const faces: AzureFace[] = await res.json()
+  const faces: DetectedFace[] = []
 
-  if (faces.length === 0) return []
+  for (const r of results) {
+    const detection = r.detection
+    const box = detection.box
+    const score = detection.score
 
-  const results: DetectedFace[] = []
-
-  for (const face of faces) {
-    const rect = face.faceRectangle
-    // Normalize box to 0-1 fractions
-    const box = {
-      x: rect.left / procWidth,
-      y: rect.top / procHeight,
-      width: rect.width / procWidth,
-      height: rect.height / procHeight,
+    const normBox = {
+      x: box.x / procWidth,
+      y: box.y / procHeight,
+      width: box.width / procWidth,
+      height: box.height / procHeight,
     }
 
-    // Extract face crop with 20% padding
-    const pad = 0.2
-    const cropX = Math.max(0, Math.round((box.x - box.width * pad) * procWidth))
-    const cropY = Math.max(0, Math.round((box.y - box.height * pad) * procHeight))
-    const cropW = Math.min(Math.round(box.width * (1 + 2 * pad) * procWidth), procWidth - cropX)
-    const cropH = Math.min(Math.round(box.height * (1 + 2 * pad) * procHeight), procHeight - cropY)
+    const descriptor = Array.from(r.descriptor as Float32Array)
+
+    const cropX = Math.max(0, Math.floor((normBox.x - normBox.width * CROP_PAD) * procWidth))
+    const cropY = Math.max(0, Math.floor((normBox.y - normBox.height * CROP_PAD) * procHeight))
+    const cropW = Math.min(
+      Math.ceil(normBox.width * (1 + 2 * CROP_PAD) * procWidth),
+      procWidth - cropX,
+    )
+    const cropH = Math.min(
+      Math.ceil(normBox.height * (1 + 2 * CROP_PAD) * procHeight),
+      procHeight - cropY,
+    )
 
     let cropBuffer: Buffer
     try {
@@ -123,37 +126,13 @@ export async function detectFaces(imageBuffer: Buffer): Promise<DetectedFace[]> 
         .toBuffer()
     }
 
-    // Use faceId as a placeholder for embedding — we'll match via Azure's
-    // Find Similar API or use crop-based perceptual hashing for grouping.
-    // For now, generate a deterministic pseudo-embedding from the faceId
-    // so the existing pgvector matching pipeline still works.
-    const descriptor = faceIdToEmbedding(face.faceId)
-
-    results.push({
-      box,
-      confidence: 0.95, // Azure detection_03 is high quality; exact score not returned
+    faces.push({
+      box: normBox,
+      confidence: score,
       descriptor,
       cropBuffer,
     })
   }
 
-  return results
-}
-
-/**
- * Convert an Azure faceId (UUID) into a 128-dim pseudo-embedding.
- * This is a temporary bridge — Azure faceIds expire after 24h.
- * For proper person grouping, we'll use Azure's PersonGroup API or
- * image-based perceptual hashing. The pgvector pipeline still works
- * for dedup within a processing batch.
- */
-function faceIdToEmbedding(faceId: string): number[] {
-  // Use the faceId bytes to seed a deterministic 128-dim vector
-  const bytes = faceId.replace(/-/g, '')
-  const embedding: number[] = []
-  for (let i = 0; i < 128; i++) {
-    const hexPair = bytes.substring((i * 2) % bytes.length, ((i * 2) % bytes.length) + 2)
-    embedding.push((parseInt(hexPair, 16) / 255) * 2 - 1) // normalize to [-1, 1]
-  }
-  return embedding
+  return faces
 }

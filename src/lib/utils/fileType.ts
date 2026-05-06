@@ -12,6 +12,11 @@ const MIME_MAP: Record<string, ContentType> = {
   'image/bmp': 'image',
   'image/heic': 'image',
   'image/heif': 'image',
+  'image/x-nikon-nef': 'image',
+  'image/x-nef': 'image',
+  'image/x-canon-cr2': 'image',
+  'image/x-adobe-dng': 'image',
+  'image/x-sony-arw': 'image',
 
   // Videos
   'video/mp4': 'video',
@@ -48,6 +53,7 @@ const EXTENSION_MAP: Record<string, ContentType> = {
   // Images
   jpg: 'image', jpeg: 'image', png: 'image', gif: 'image', webp: 'image',
   svg: 'image', tiff: 'image', tif: 'image', bmp: 'image', heic: 'image', heif: 'image',
+  nef: 'image', cr2: 'image', dng: 'image', arw: 'image', raw: 'image',
   // Videos
   mp4: 'video', mov: 'video', avi: 'video', mpeg: 'video', mpg: 'video',
   webm: 'video', ogv: 'video', '3gp': 'video', mkv: 'video',

@@ -1,6 +1,6 @@
 import { createClient as createRawClient } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
-import { detectFaces } from '@/lib/faceapi'
+import { detectFaces, FaceModelsUnavailableError } from '@/lib/faceapi'
 import { findOrCreatePerson, updateRepresentativeFace } from '@/lib/faceapi/matching'
 import sharp from 'sharp'
 
@@ -8,19 +8,21 @@ export const runtime = 'nodejs'
 export const maxDuration = 300
 
 /**
- * Azure Free tier: 30 calls/minute, 30K/month.
- * Process a small batch per invocation. Vercel Cron calls this periodically.
+ * Cron-driven face scan using face-api.js (no external API).
  *
  * Priority order:
- * 1. Images with face-related tags (event, portrait, team, group, staff, etc.)
+ * 1. Images with face-related tags (event, portrait, team, etc.)
  * 2. All other unscanned images
  * 3. Newly imported images (faces_scanned = false)
  *
- * Rate limiting: process up to BATCH_SIZE images per invocation.
- * If we hit Azure's rate limit, stop gracefully.
+ * On error we record the message in `face_scan_error` instead of silently
+ * marking scanned, so failures are visible. Set faces_scanned=true only on
+ * successful processing or known-permanent failure (corrupt image).
  */
 
-const BATCH_SIZE = 10 // ~10 API calls per 5-min cron run, well within 30/min
+// face-api.js on CPU runs ~300-700ms per image at 1280px. With Vercel's
+// 300s timeout and a small overhead margin, ~25 images per cron is safe.
+const BATCH_SIZE = 25
 const FACE_PRIORITY_TAGS = [
   'event',
   'portrait',
@@ -56,11 +58,6 @@ export async function GET(request: NextRequest) {
   }
 
   const serviceClient = createRawClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
-
-  // Check if Azure Face API is configured
-  if (!process.env.AZURE_FACE_ENDPOINT || !process.env.AZURE_FACE_KEY) {
-    return NextResponse.json({ error: 'Azure Face API not configured' }, { status: 500 })
-  }
 
   const results: { assetId: string; fileName: string; faces: number; error?: string }[] = []
   let rateLimited = false
@@ -117,34 +114,58 @@ export async function GET(request: NextRequest) {
         .from('northvault-assets')
         .createSignedUrl(asset.storage_path, 300)
 
+      // Mark attempt time up front so we can throttle retries on transient failures
+      await serviceClient
+        .schema('northvault')
+        .from('assets')
+        .update({ face_scan_attempted_at: new Date().toISOString() })
+        .eq('id', asset.id)
+
       if (!signedData?.signedUrl) {
+        await serviceClient
+          .schema('northvault')
+          .from('assets')
+          .update({ face_scan_error: 'Could not sign URL' })
+          .eq('id', asset.id)
         results.push({ assetId: asset.id, fileName: asset.file_name, faces: 0, error: 'Could not sign URL' })
         continue
       }
 
       const res = await fetch(signedData.signedUrl)
       if (!res.ok) {
+        await serviceClient
+          .schema('northvault')
+          .from('assets')
+          .update({ face_scan_error: `Download failed: HTTP ${res.status}` })
+          .eq('id', asset.id)
         results.push({ assetId: asset.id, fileName: asset.file_name, faces: 0, error: 'Download failed' })
         continue
       }
 
       const buffer = Buffer.from(await res.arrayBuffer())
 
-      // Verify it's a valid image before sending to Azure
+      // Verify it's a valid image — corrupt files are permanent failures
       try {
         await sharp(buffer).metadata()
       } catch {
-        // Not a valid image — mark as scanned to skip in future
-        await serviceClient.schema('northvault').from('assets').update({ faces_scanned: true }).eq('id', asset.id)
+        await serviceClient
+          .schema('northvault')
+          .from('assets')
+          .update({ faces_scanned: true, face_scan_error: 'Invalid image' })
+          .eq('id', asset.id)
         results.push({ assetId: asset.id, fileName: asset.file_name, faces: 0, error: 'Invalid image' })
         continue
       }
 
-      // Detect faces via Azure
+      // Detect faces via face-api.js
       const faces = await detectFaces(buffer)
 
       if (faces.length === 0) {
-        await serviceClient.schema('northvault').from('assets').update({ faces_scanned: true }).eq('id', asset.id)
+        await serviceClient
+          .schema('northvault')
+          .from('assets')
+          .update({ faces_scanned: true, face_scan_error: null })
+          .eq('id', asset.id)
         results.push({ assetId: asset.id, fileName: asset.file_name, faces: 0 })
         continue
       }
@@ -179,16 +200,35 @@ export async function GET(request: NextRequest) {
         await updateRepresentativeFace(pid, serviceClient)
       }
 
-      await serviceClient.schema('northvault').from('assets').update({ faces_scanned: true }).eq('id', asset.id)
+      await serviceClient
+        .schema('northvault')
+        .from('assets')
+        .update({ faces_scanned: true, face_scan_error: null })
+        .eq('id', asset.id)
       results.push({ assetId: asset.id, fileName: asset.file_name, faces: faces.length })
     } catch (err) {
       const msg = (err as Error).message
-      if (msg.startsWith('RATE_LIMITED:')) {
+      if (err instanceof FaceModelsUnavailableError) {
+        // Hard configuration failure — stop the whole batch and surface loudly
         rateLimited = true
-        results.push({ assetId: asset.id, fileName: asset.file_name, faces: 0, error: 'Rate limited — stopping batch' })
+        results.push({
+          assetId: asset.id,
+          fileName: asset.file_name,
+          faces: 0,
+          error: 'Face models not installed on server (run download-face-models.sh)',
+        })
+        await serviceClient
+          .schema('northvault')
+          .from('assets')
+          .update({ face_scan_error: 'Face models not installed on server' })
+          .eq('id', asset.id)
       } else {
-        // Mark as scanned to avoid retrying broken images indefinitely
-        await serviceClient.schema('northvault').from('assets').update({ faces_scanned: true }).eq('id', asset.id)
+        // Transient failure — record but DON'T mark scanned, so we'll retry next run
+        await serviceClient
+          .schema('northvault')
+          .from('assets')
+          .update({ face_scan_error: msg.slice(0, 500) })
+          .eq('id', asset.id)
         results.push({ assetId: asset.id, fileName: asset.file_name, faces: 0, error: msg })
       }
     }

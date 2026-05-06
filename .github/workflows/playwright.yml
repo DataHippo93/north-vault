@@ -1,0 +1,69 @@
+name: Playwright E2E
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: playwright-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Smoke tests (no auth)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SKIP_FACE_MODELS: '1' # don't slow CI on the postinstall download
+      SKIP_ENV_VALIDATION: '1' # ENV vars get supplied to deployed app, not to the test runner
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Smoke run against ephemeral preview
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ secrets.VERCEL_PREVIEW_URL || 'http://localhost:3000' }}
+          PLAYWRIGHT_SKIP_WEBSERVER: ${{ secrets.VERCEL_PREVIEW_URL && '1' || '' }}
+        run: npm run test:e2e -- tests/e2e/smoke.spec.ts
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+
+  cloud:
+    name: Microsoft Playwright Testing (full suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Skip on PRs from forks (no secrets); skip if the service token isn't set
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push' }}
+    env:
+      SKIP_FACE_MODELS: '1'
+      SKIP_ENV_VALIDATION: '1'
+      PLAYWRIGHT_SERVICE_URL: ${{ secrets.PLAYWRIGHT_SERVICE_URL }}
+      PLAYWRIGHT_SERVICE_ACCESS_TOKEN: ${{ secrets.PLAYWRIGHT_SERVICE_ACCESS_TOKEN }}
+      PLAYWRIGHT_BASE_URL: ${{ secrets.VERCEL_PREVIEW_URL }}
+      PLAYWRIGHT_SKIP_WEBSERVER: '1'
+      E2E_USER_EMAIL: ${{ secrets.E2E_USER_EMAIL }}
+      E2E_USER_PASSWORD: ${{ secrets.E2E_USER_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run on Microsoft Playwright Testing
+        if: env.PLAYWRIGHT_SERVICE_URL != '' && env.PLAYWRIGHT_SERVICE_ACCESS_TOKEN != ''
+        run: npm run test:e2e:cloud
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-cloud
+          path: playwright-report/

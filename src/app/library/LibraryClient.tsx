@@ -18,6 +18,9 @@ interface Props {
 const GRID_COLUMNS =
   'id, file_name, original_filename, file_path, file_size, mime_type, content_type, sha256_hash, business, uploaded_by, created_at, original_created_at, storage_path, storage_url, tags, notes, thumbnail_path, faces_scanned'
 
+// How many items to fetch per DB page
+const FETCH_PAGE_SIZE = 200
+
 // How many items to render at a time before "Load more"
 const PAGE_RENDER_SIZE = 100
 
@@ -45,6 +48,8 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
   const [totalCount, setTotalCount] = useState<number | null>(null)
   const [thumbUrls, setThumbUrls] = useState<Record<string, string | null>>({})
   const [renderLimit, setRenderLimit] = useState(PAGE_RENDER_SIZE)
+  const [hasMoreData, setHasMoreData] = useState(true)
+  const [fetchOffset, setFetchOffset] = useState(0)
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
@@ -103,38 +108,122 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
 
     query = query.order(sortBy, { ascending: sortDir === 'asc' })
 
-    // Paginate to bypass Supabase's 1000-row default limit
-    const PAGE_SIZE = 1000
-    let allData: Asset[] = []
-    let from = 0
-    let keepGoing = true
-
-    while (keepGoing) {
-      const { data: page, error: pageError } = await query.range(from, from + PAGE_SIZE - 1)
-      if (pageError) {
-        console.error('Asset query error:', pageError)
-        setQueryError(pageError.message)
-        setLoading(false)
-        return
-      }
-      if (page) allData = allData.concat(page as Asset[])
-      if (!page || page.length < PAGE_SIZE) keepGoing = false
-      else from += PAGE_SIZE
+    // Fetch initial page only — load more on demand
+    const { data: page, error: pageError } = await query.range(0, FETCH_PAGE_SIZE - 1)
+    if (pageError) {
+      console.error('Asset query error:', pageError)
+      setQueryError(pageError.message)
+      setLoading(false)
+      return
     }
 
-    setAssets(allData)
+    const data = (page ?? []) as Asset[]
+    setAssets(data)
+    setFetchOffset(data.length)
+    setHasMoreData(data.length >= FETCH_PAGE_SIZE)
     setRenderLimit(PAGE_RENDER_SIZE)
     setLoading(false)
   }, [filters, sortBy, sortDir])
 
-  // Fetch total asset count (unfiltered)
-  useEffect(() => {
-    async function fetchTotalCount() {
-      const { count } = await supabase.schema('northvault').from('assets').select('id', { count: 'exact', head: true })
-      setTotalCount(count)
+  const loadMoreData = useCallback(async () => {
+    if (!hasMoreData || filters.query) return // text search returns all at once
+
+    let query = supabase.schema('northvault').from('assets').select(GRID_COLUMNS)
+
+    if (filters.contentTypes.length > 0) {
+      query = query.in('content_type', filters.contentTypes)
     }
-    fetchTotalCount()
-  }, [])
+    if (filters.businessEntity !== 'all') {
+      query = query.or(`business.eq.${filters.businessEntity},business.eq.both`)
+    }
+    if (filters.dateFrom) {
+      query = query.gte('created_at', filters.dateFrom)
+    }
+    if (filters.dateTo) {
+      query = query.lte('created_at', filters.dateTo + 'T23:59:59Z')
+    }
+    if (filters.tags.length > 0) {
+      query = query.overlaps('tags', filters.tags)
+    }
+
+    query = query.order(sortBy, { ascending: sortDir === 'asc' })
+
+    const { data: page } = await query.range(fetchOffset, fetchOffset + FETCH_PAGE_SIZE - 1)
+    const newData = (page ?? []) as Asset[]
+
+    if (newData.length > 0) {
+      setAssets((prev) => [...prev, ...newData])
+      setFetchOffset((prev) => prev + newData.length)
+    }
+    if (newData.length < FETCH_PAGE_SIZE) {
+      setHasMoreData(false)
+    }
+  }, [filters, sortBy, sortDir, fetchOffset, hasMoreData])
+
+  // Cache total counts per filter key to avoid repeated count queries
+  const [countCache] = useState<Record<string, { count: number; ts: number }>>({})
+  const COUNT_CACHE_TTL = 60_000 // 1 minute
+
+  // Fetch count for current filters (cached)
+  useEffect(() => {
+    async function fetchCount() {
+      // Build a cache key from active filters
+      const filterKey = JSON.stringify({
+        ct: filters.contentTypes,
+        be: filters.businessEntity,
+        df: filters.dateFrom,
+        dt: filters.dateTo,
+        tg: filters.tags,
+        q: filters.query,
+      })
+
+      const cached = countCache[filterKey]
+      if (cached && Date.now() - cached.ts < COUNT_CACHE_TTL) {
+        setTotalCount(cached.count)
+        return
+      }
+
+      // Also always cache the unfiltered count
+      const unfilteredKey = JSON.stringify({ ct: [], be: 'all', df: undefined, dt: undefined, tg: [], q: '' })
+      const hasCachedUnfiltered = countCache[unfilteredKey]
+
+      let query = supabase.schema('northvault').from('assets').select('id', { count: 'exact', head: true })
+
+      if (filters.contentTypes.length > 0) {
+        query = query.in('content_type', filters.contentTypes)
+      }
+      if (filters.businessEntity !== 'all') {
+        query = query.or(`business.eq.${filters.businessEntity},business.eq.both`)
+      }
+      if (filters.dateFrom) {
+        query = query.gte('created_at', filters.dateFrom)
+      }
+      if (filters.dateTo) {
+        query = query.lte('created_at', filters.dateTo + 'T23:59:59Z')
+      }
+      if (filters.tags.length > 0) {
+        query = query.overlaps('tags', filters.tags)
+      }
+
+      const { count } = await query
+      if (count !== null) {
+        countCache[filterKey] = { count, ts: Date.now() }
+        setTotalCount(count)
+      }
+
+      // Pre-cache unfiltered count if not cached
+      if (!hasCachedUnfiltered && filterKey !== unfilteredKey) {
+        const { count: total } = await supabase
+          .schema('northvault')
+          .from('assets')
+          .select('id', { count: 'exact', head: true })
+        if (total !== null) {
+          countCache[unfilteredKey] = { count: total, ts: Date.now() }
+        }
+      }
+    }
+    fetchCount()
+  }, [filters])
 
   useEffect(() => {
     loadAssets()
@@ -492,6 +581,14 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
     loadAssets()
   }
 
+  async function handleBulkBusiness(business: string) {
+    const selected = assets.filter((a) => selectedIds.has(a.id))
+    for (const asset of selected) {
+      await supabase.schema('northvault').from('assets').update({ business }).eq('id', asset.id)
+    }
+    loadAssets()
+  }
+
   async function handleBulkDelete() {
     const selected = assets.filter((a) => selectedIds.has(a.id))
     if (
@@ -511,6 +608,11 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
   }
 
   function handleSelect(id: string, shiftKey: boolean) {
+    // Prevent text selection on shift-click (like Google Photos)
+    if (shiftKey) {
+      window.getSelection()?.removeAllRanges()
+    }
+
     const idx = assets.findIndex((a) => a.id === id)
     if (shiftKey && lastSelectedId !== null) {
       const lastIdx = assets.findIndex((a) => a.id === lastSelectedId)
@@ -762,6 +864,21 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
               Tag
             </button>
           </div>
+          <select
+            onChange={(e) => {
+              if (e.target.value) handleBulkBusiness(e.target.value)
+              e.target.value = ''
+            }}
+            defaultValue=""
+            className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700"
+          >
+            <option value="" disabled>
+              Set company...
+            </option>
+            <option value="natures">Nature&apos;s Storehouse</option>
+            <option value="adk">ADK Fragrance</option>
+            <option value="both">Both</option>
+          </select>
           <button
             onClick={handleBulkAiTag}
             disabled={bulkTagging}
@@ -839,7 +956,7 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
         </div>
       ) : view === 'grid' ? (
         <>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+          <div className={`grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5${selectedIds.size > 0 ? ' select-none' : ''}`}>
             {assets.slice(0, renderLimit).map((asset) => (
               <AssetCard
                 key={asset.id}
@@ -851,14 +968,22 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
               />
             ))}
           </div>
-          {renderLimit < assets.length && (
+          {(renderLimit < assets.length || hasMoreData) && (
             <div className="flex justify-center pt-4">
               <button
-                onClick={() => setRenderLimit((l) => l + PAGE_RENDER_SIZE)}
+                onClick={() => {
+                  setRenderLimit((l) => l + PAGE_RENDER_SIZE)
+                  // Pre-fetch more data when approaching end of loaded data
+                  if (renderLimit + PAGE_RENDER_SIZE >= assets.length && hasMoreData) {
+                    loadMoreData()
+                  }
+                }}
                 className="border-sage-300 text-sage-700 hover:bg-sage-100 rounded-lg border bg-white px-6 py-2.5 text-sm font-medium transition-colors"
               >
-                Load more ({Math.min(PAGE_RENDER_SIZE, assets.length - renderLimit)} of{' '}
-                {(assets.length - renderLimit).toLocaleString()} remaining)
+                Load more
+                {totalCount !== null
+                  ? ` (${Math.max(0, totalCount - renderLimit).toLocaleString()} remaining)`
+                  : ` (${Math.max(0, assets.length - renderLimit).toLocaleString()} loaded)`}
               </button>
             </div>
           )}
@@ -883,10 +1008,15 @@ export default function LibraryClient({ userId: _userId, userRole, defaultBusine
               </div>
             ))}
           </div>
-          {renderLimit < assets.length && (
+          {(renderLimit < assets.length || hasMoreData) && (
             <div className="flex justify-center pt-4">
               <button
-                onClick={() => setRenderLimit((l) => l + PAGE_RENDER_SIZE)}
+                onClick={() => {
+                  setRenderLimit((l) => l + PAGE_RENDER_SIZE)
+                  if (renderLimit + PAGE_RENDER_SIZE >= assets.length && hasMoreData) {
+                    loadMoreData()
+                  }
+                }}
                 className="border-sage-300 text-sage-700 hover:bg-sage-100 rounded-lg border bg-white px-6 py-2.5 text-sm font-medium transition-colors"
               >
                 Load more ({(assets.length - renderLimit).toLocaleString()} remaining)

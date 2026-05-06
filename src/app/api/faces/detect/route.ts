@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createRawClient } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
-import { detectFaces } from '@/lib/faceapi'
+import { detectFaces, FaceModelsUnavailableError } from '@/lib/faceapi'
 import { findOrCreatePerson, updateRepresentativeFace } from '@/lib/faceapi/matching'
 
 export const runtime = 'nodejs'
@@ -71,8 +71,11 @@ export async function POST(request: NextRequest) {
           const faces = await detectFaces(buffer)
 
           if (faces.length === 0) {
-            // Mark as scanned even if no faces found
-            await serviceClient.schema('northvault').from('assets').update({ faces_scanned: true }).eq('id', assetId)
+            await serviceClient
+              .schema('northvault')
+              .from('assets')
+              .update({ faces_scanned: true, face_scan_error: null, face_scan_attempted_at: new Date().toISOString() })
+              .eq('id', assetId)
 
             results.push({ assetId, facesFound: 0 })
             send('file', { assetId, fileName: asset.file_name, facesFound: 0, status: 'done' })
@@ -114,13 +117,27 @@ export async function POST(request: NextRequest) {
           }
 
           // Mark asset as scanned
-          await serviceClient.schema('northvault').from('assets').update({ faces_scanned: true }).eq('id', assetId)
+          await serviceClient
+            .schema('northvault')
+            .from('assets')
+            .update({ faces_scanned: true, face_scan_error: null, face_scan_attempted_at: new Date().toISOString() })
+            .eq('id', assetId)
 
           results.push({ assetId, facesFound: faces.length })
           send('file', { assetId, fileName: asset.file_name, facesFound: faces.length, status: 'done' })
         } catch (err) {
-          results.push({ assetId, facesFound: 0, error: (err as Error).message })
-          send('file', { assetId, facesFound: 0, status: 'error', error: (err as Error).message })
+          const msg = (err as Error).message
+          const errLabel =
+            err instanceof FaceModelsUnavailableError
+              ? 'Face models not installed on server'
+              : msg
+          await serviceClient
+            .schema('northvault')
+            .from('assets')
+            .update({ face_scan_error: errLabel.slice(0, 500), face_scan_attempted_at: new Date().toISOString() })
+            .eq('id', assetId)
+          results.push({ assetId, facesFound: 0, error: errLabel })
+          send('file', { assetId, facesFound: 0, status: 'error', error: errLabel })
         }
       }
 
