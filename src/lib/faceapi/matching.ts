@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 // Tuned for face-api.js descriptors (L2-normalized 128-d, face_recognition_model).
 // cosine_similarity > 0.78 ≈ euclidean_distance < 0.66, slightly more permissive
 // than the textbook 0.6 threshold so we still cluster across pose/lighting.
-const SIMILARITY_THRESHOLD = 0.78
+const SIMILARITY_THRESHOLD = 0.92
 
 /**
  * Find an existing person matching the given face embedding,

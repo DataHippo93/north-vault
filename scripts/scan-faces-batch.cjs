@@ -20,7 +20,12 @@ faceapi.tf = tf
 
 const MODELS_PATH = path.join(__dirname, '..', 'public', 'models')
 const BATCH_SIZE = parseInt(process.argv[2] || process.env.FACE_BATCH_SIZE || '20', 10)
-const SIM_THRESHOLD = 0.78
+// Tightened for face-api.js descriptors computed from tensor3d inputs:
+// observed pairwise cosine similarities in our corpus run 0.85-0.98, so 0.92
+// only clusters genuinely-same-person matches. Tune down if cluster count is
+// excessive vs visual judgment, up if persons get false-merged.
+const SIM_THRESHOLD = 0.92
+const DETECT_THRESHOLD = 0.7 // up from 0.5 — kill non-face false positives
 const MAX_DIM = 1280
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -57,7 +62,7 @@ async function detectFaces(buffer) {
   const { tensor, width: procW, height: procH } = await bufferToTensor(buffer)
 
   try {
-    const opts = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 })
+    const opts = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: DETECT_THRESHOLD })
     const results = await faceapi.detectAllFaces(tensor, opts).withFaceLandmarks().withFaceDescriptors()
 
     const out = []
